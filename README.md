@@ -50,6 +50,10 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 - O orquestrador host-side está instalado como serviço systemd, conectado ao
   Supabase com usuário PostgreSQL exclusivo e ativo no boot.
 
+O runtime observacional hermes-indicadores está ativo em
+/srv/labs/projects/lab-b/hermes, sem rede, holdout, Docker socket ou
+capacidade de execução; o painel acompanha seu heartbeat.
+
 ## Documentos
 
 - [`PROJECT_CONTRACT.md`](docs/PROJECT_CONTRACT.md)
