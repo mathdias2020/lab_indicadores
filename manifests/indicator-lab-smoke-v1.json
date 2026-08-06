@@ -1,0 +1,68 @@
+{
+  "manifest_version": "1",
+  "manifest_id": "indicator-lab-smoke-v1",
+  "run_id": "indicator-lab-preflight-v1",
+  "project_id": "lab-indicadores",
+  "purpose": "preflight de isolamento, cobertura e leitura somente",
+  "holdout_accessed": false,
+  "source_timezone_assumption": "America/Sao_Paulo",
+  "allowed_years": [2012, 2016, 2020, 2024],
+  "files": [
+    {
+      "asset": "WDO",
+      "path": "expanded_sample_v1/raw/wdofut/2012-04.parquet",
+      "rows": 2294,
+      "bytes": 22806,
+      "sha256": "cc161ff71914b8aeced3968268214f9a7e022359a1ce97a7715e02634c4dcbcf"
+    },
+    {
+      "asset": "WDO",
+      "path": "expanded_sample_v1/raw/wdofut/2016-01.parquet",
+      "rows": 2537117,
+      "bytes": 20097276,
+      "sha256": "1ea4eeae7b2383379cf3c3c855025d762a4d21f53bd3f3852f8da25e5509c160"
+    },
+    {
+      "asset": "WDO",
+      "path": "expanded_sample_v1/raw/wdofut/2020-01.parquet",
+      "rows": 7571969,
+      "bytes": 62858651,
+      "sha256": "3ad8ab19851ccb4e36531a2102c9757ced55eb76e7aabd896a920f33f461c467"
+    },
+    {
+      "asset": "WDO",
+      "path": "expanded_sample_v1/raw/wdofut/2024-01.parquet",
+      "rows": 13904877,
+      "bytes": 109404767,
+      "sha256": "ffbcb23ef86ef4a08e4f46a81c4cb409f6697b7e0d0d0a79fb7d5cd5301f19ce"
+    },
+    {
+      "asset": "WIN",
+      "path": "expanded_sample_v1/raw/winfut/2012-04.parquet",
+      "rows": 520795,
+      "bytes": 4011027,
+      "sha256": "efedc1da12b0afb0c149991adf47ff41d65594384866519a941c210a8e51c3e"
+    },
+    {
+      "asset": "WIN",
+      "path": "expanded_sample_v1/raw/winfut/2016-01.parquet",
+      "rows": 2700549,
+      "bytes": 22683415,
+      "sha256": "6221444a92063102733449db36dd2e8653fe3e4a3cb2d580bd0a59b5a93b213b"
+    },
+    {
+      "asset": "WIN",
+      "path": "expanded_sample_v1/raw/winfut/2020-01.parquet",
+      "rows": 50191311,
+      "bytes": 407362048,
+      "sha256": "db96ae5820311a16f2865b05b788a6e4e06e99951557fa0a78574d7122e5960b"
+    },
+    {
+      "asset": "WIN",
+      "path": "expanded_sample_v1/raw/winfut/2024-01.parquet",
+      "rows": 90247231,
+      "bytes": 697777962,
+      "sha256": "eeaaee8fa6c3d3a1d20404f045d7d967b283b50fc729846bdfaf247819b91ea9"
+    }
+  ]
+}

@@ -39,8 +39,9 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 
 - Fase: fundação e contratos.
 - VPS e Supabase: infraestrutura compartilhada, sem alterações deste laboratório.
-- Parquets: fonte compartilhada, sempre montada como somente leitura.
-- Dados brutos, DuckDBs, resultados, logs e artefatos: separados por laboratório.
+- Parquets: entrada global comum, sempre montada como somente leitura; nenhum
+  laboratório escreve nela.
+- Código, DuckDBs, resultados, logs e artefatos: exclusivos de cada laboratório.
 
 ## Documentos
 
@@ -49,3 +50,4 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 - [`INDICATOR_CONTRACT.md`](docs/INDICATOR_CONTRACT.md)
 - [`SHARED_INFRA_CONTRACT.md`](docs/SHARED_INFRA_CONTRACT.md)
 - [`CONTROL_PLANE.md`](docs/CONTROL_PLANE.md)
+- [`VPS_REGISTRATION.md`](docs/VPS_REGISTRATION.md)

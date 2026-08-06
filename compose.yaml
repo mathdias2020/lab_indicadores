@@ -1,0 +1,51 @@
+name: lab_indicadores
+
+services:
+  indicator-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["healthcheck"]
+    environment:
+      INDICATOR_MANIFEST: /app/manifests/indicator-lab-smoke-v1.json
+      CANONICAL_ROOT: /data/canonical
+      WORKER_ID: lab-indicadores-worker
+    network_mode: none
+    read_only: true
+    restart: "no"
+    cpus: 1.0
+    mem_limit: 2g
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - type: bind
+        source: /srv/labs/datasets/canonical
+        target: /data/canonical
+        read_only: true
+      - type: bind
+        source: /srv/labs/datasets/manifests
+        target: /data/manifests
+        read_only: true
+      - type: bind
+        source: /srv/labs/datasets/holdout
+        target: /data/holdout
+        read_only: true
+      - type: bind
+        source: /srv/labs/projects/lab-b/runs
+        target: /app/runs
+      - type: bind
+        source: /srv/labs/projects/lab-b/logs
+        target: /app/logs
+      - type: bind
+        source: /srv/labs/projects/lab-b/work
+        target: /app/work
+    healthcheck:
+      test: ["CMD", "python", "-m", "lab_indicadores.worker", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
