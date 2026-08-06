@@ -14,6 +14,11 @@ enqueue_preflight -> claim_next_command -> run worker -> artifact -> events
 The dashboard and chat will be clients of this same command contract. Neither
 client receives unrestricted shell access.
 
+The MVP dashboard reaches the control plane through the `public.dashboard_*`
+RPC gateway. These wrappers are `SECURITY INVOKER`, are executable only by
+authenticated users, and preserve the owner-scoped RLS boundary of the private
+schema.
+
 ## State model
 
 Run states:

@@ -44,7 +44,9 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
   laboratório escreve nela.
 - Código, DuckDBs, resultados, logs e artefatos: exclusivos de cada laboratório.
 - O schema `lab_indicadores` e seu contrato de fila já foram aplicados no
-  Supabase compartilhado. O painel ainda não foi implementado.
+  Supabase compartilhado. O painel MVP está em [`dashboard/`](dashboard/),
+  usando Auth e RPCs autenticadas; ele ainda não foi publicado nem exposto por
+  porta pública.
 - O orquestrador host-side está instalado como serviço systemd, conectado ao
   Supabase com usuário PostgreSQL exclusivo e ativo no boot.
 
@@ -58,3 +60,4 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 - [`CONTROL_PLANE_V1.md`](docs/CONTROL_PLANE_V1.md)
 - [`ORCHESTRATOR.md`](docs/ORCHESTRATOR.md)
 - [`VPS_REGISTRATION.md`](docs/VPS_REGISTRATION.md)
+- [`dashboard/README.md`](dashboard/README.md)
