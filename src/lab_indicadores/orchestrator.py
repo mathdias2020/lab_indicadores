@@ -33,9 +33,14 @@ LOG_ROOT = LAB_ROOT / "logs" / "orchestrator"
 HERMES_AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 HERMES_HEARTBEAT_PATH = LAB_ROOT / "hermes" / "outbox" / "heartbeat.json"
 HERMES_STALE_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_STALE_SECONDS", "30"))
-HERMES_CAPABILITIES = ["read_development_data", "heartbeat_only"]
+HERMES_CAPABILITIES = ["read_development_data", "proposal_generation"]
 HERMES_ALLOWED_STATUSES = {"observing", "proposing", "degraded", "error"}
 HERMES_ALLOWED_MODES = {"observation", "proposal", "research", "review"}
+HERMES_CONTEXT_MANIFEST = "hermes-context-absorption-v1"
+HERMES_CONTEXT_PATH = LAB_ROOT / "hermes" / "context" / "absorption-research-v1.json"
+HERMES_INBOX_PATH = LAB_ROOT / "hermes" / "inbox"
+HERMES_PROPOSAL_ROOT = LAB_ROOT / "hermes" / "outbox" / "proposals"
+HERMES_ENGINE_SERVICE = "lab-indicadores-hermes-engine.service"
 
 
 def _database_url() -> str:
@@ -192,7 +197,119 @@ def _register_hermes(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
-def _start_run(conn: psycopg.Connection, run_id: str) -> None:
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _ingest_hermes_proposals(
+    conn: psycopg.Connection,
+    expected_proposal_key: str | None = None,
+) -> dict | None:
+    if not HERMES_PROPOSAL_ROOT.is_dir():
+        return None
+
+    selected: dict | None = None
+    for artifact_path in sorted(HERMES_PROPOSAL_ROOT.glob("*.json")):
+        try:
+            artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            proposal = artifact["proposal"]
+            if artifact.get("kind") != "hermes_proposal_v1":
+                continue
+            if artifact.get("agent_id") != HERMES_AGENT_ID:
+                continue
+            if expected_proposal_key and artifact.get("proposal_key") != expected_proposal_key:
+                continue
+            if artifact.get("holdout_accessed") is not False or proposal.get("holdout_accessed") is not False:
+                raise ValueError("proposal holdout contract failed")
+            if proposal.get("agent_id") != HERMES_AGENT_ID:
+                raise ValueError("proposal agent mismatch")
+            proposal_hash = hashlib.sha256(_canonical_json(proposal)).hexdigest()
+            if proposal_hash != artifact.get("proposal_sha256"):
+                raise ValueError("proposal hash mismatch")
+
+            run_id = proposal["run_id"]
+            owner_row = conn.execute(
+                "select owner_id from lab_indicadores.runs where id=%s",
+                (run_id,),
+            ).fetchone()
+            if not owner_row:
+                raise ValueError("proposal run does not exist")
+
+            artifact_sha256 = _sha256(artifact_path)
+            conn.execute(
+                """
+                insert into lab_indicadores.proposals (
+                  proposal_key, run_id, agent_id, owner_id, status, evidence_level,
+                  asset, track, horizon, title, question, mechanism, hypothesis,
+                  validation_plan, limitations, source_context_uri,
+                  source_context_sha256, proposal_sha256, artifact_uri, holdout_accessed
+                ) values (
+                  %s, %s, %s, %s, 'in_review', %s,
+                  %s, %s, %s, %s, %s, %s, %s,
+                  %s::jsonb, %s::jsonb, %s,
+                  %s, %s, %s, false
+                )
+                on conflict (proposal_key) do update set
+                  run_id = excluded.run_id,
+                  agent_id = excluded.agent_id,
+                  owner_id = excluded.owner_id,
+                  status = case
+                    when lab_indicadores.proposals.status in ('accepted', 'rejected', 'superseded')
+                      then lab_indicadores.proposals.status
+                    else excluded.status
+                  end,
+                  evidence_level = excluded.evidence_level,
+                  asset = excluded.asset,
+                  track = excluded.track,
+                  horizon = excluded.horizon,
+                  title = excluded.title,
+                  question = excluded.question,
+                  mechanism = excluded.mechanism,
+                  hypothesis = excluded.hypothesis,
+                  validation_plan = excluded.validation_plan,
+                  limitations = excluded.limitations,
+                  source_context_uri = excluded.source_context_uri,
+                  source_context_sha256 = excluded.source_context_sha256,
+                  proposal_sha256 = excluded.proposal_sha256,
+                  artifact_uri = excluded.artifact_uri,
+                  holdout_accessed = false
+                """,
+                (
+                    artifact["proposal_key"],
+                    run_id,
+                    HERMES_AGENT_ID,
+                    owner_row["owner_id"],
+                    proposal["evidence_level"],
+                    proposal["asset"],
+                    proposal["track"],
+                    proposal["horizon"],
+                    proposal["title"],
+                    proposal["question"],
+                    proposal["mechanism"],
+                    proposal["hypothesis"],
+                    json.dumps(proposal["validation_plan"], sort_keys=True),
+                    json.dumps(proposal["limitations"], sort_keys=True),
+                    artifact["source_context_uri"],
+                    artifact["source_context_sha256"],
+                    artifact["proposal_sha256"],
+                    str(artifact_path),
+                ),
+            )
+            conn.commit()
+            selected = {
+                "path": artifact_path,
+                "proposal_key": artifact["proposal_key"],
+                "proposal_sha256": artifact["proposal_sha256"],
+                "artifact_sha256": artifact_sha256,
+            }
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            conn.rollback()
+            if expected_proposal_key:
+                raise
+    return selected
+
+
+def _start_run(conn: psycopg.Connection, run_id: str, run_type: str = "preflight") -> None:
     conn.execute(
         """
         update lab_indicadores.runs
@@ -204,7 +321,8 @@ def _start_run(conn: psycopg.Connection, run_id: str) -> None:
         (run_id,),
     )
     conn.commit()
-    _event(conn, run_id, "run_started", "Preflight worker started", {"worker_id": WORKER_ID})
+    message = "Hermes research proposal started" if run_type == "research" else "Preflight worker started"
+    _event(conn, run_id, "run_started", message, {"worker_id": WORKER_ID, "run_type": run_type})
 
 
 def _succeed_run(conn: psycopg.Connection, run_id: str, command_id: str, result: dict) -> None:
@@ -267,7 +385,101 @@ def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str
         (message, command_id),
     )
     conn.commit()
-    _event(conn, run_id, "run_failed", "Preflight failed", {"error": message})
+    _event(conn, run_id, "run_failed", "Run failed", {"error": message})
+
+
+def _execute_research(conn: psycopg.Connection, run_id: str) -> dict:
+    if not HERMES_CONTEXT_PATH.is_file():
+        raise FileNotFoundError(HERMES_CONTEXT_PATH)
+
+    if not conn.execute(
+        "select 1 from lab_indicadores.runs where id=%s",
+        (run_id,),
+    ).fetchone():
+        raise RuntimeError(f"research run not found: {run_id}")
+
+    proposal_key = f"hermes-{run_id}"
+    HERMES_INBOX_PATH.mkdir(parents=True, exist_ok=True)
+    job_path = HERMES_INBOX_PATH / f"{run_id}.json"
+    job = {
+        "kind": "hermes_research_job_v1",
+        "agent_id": HERMES_AGENT_ID,
+        "run_id": run_id,
+        "proposal_key": proposal_key,
+        "dataset_manifest": HERMES_CONTEXT_MANIFEST,
+        "context_path": str(HERMES_CONTEXT_PATH),
+        "execution_profile": "fixture_proposal",
+    }
+    temporary_path = job_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary_path, job_path)
+
+    completed = subprocess.run(
+        ["sudo", "-n", "systemctl", "start", HERMES_ENGINE_SERVICE],
+        cwd=LAB_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Hermes engine exited with code {completed.returncode}: {completed.stdout[-2000:]}"
+        )
+
+    proposal = _ingest_hermes_proposals(conn, expected_proposal_key=proposal_key)
+    if not proposal:
+        raise RuntimeError("Hermes engine completed without a proposal artifact")
+    return {"proposal": proposal}
+
+
+def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, result: dict) -> None:
+    proposal = result["proposal"]
+    artifact_path = Path(proposal["path"]).resolve()
+    if not artifact_path.is_file() or not artifact_path.is_relative_to(HERMES_PROPOSAL_ROOT.resolve()):
+        raise RuntimeError("unexpected Hermes proposal artifact path")
+
+    conn.execute(
+        """
+        insert into lab_indicadores.artifacts
+          (run_id, artifact_type, uri, sha256, metadata)
+        values (%s, 'hermes_proposal', %s, %s, %s::jsonb)
+        """,
+        (
+            run_id,
+            str(artifact_path),
+            proposal["artifact_sha256"],
+            json.dumps(
+                {
+                    "proposal_key": proposal["proposal_key"],
+                    "proposal_sha256": proposal["proposal_sha256"],
+                    "holdout_accessed": False,
+                },
+                sort_keys=True,
+            ),
+        ),
+    )
+    conn.execute(
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=now(), finished_at=now() where id=%s",
+        (run_id,),
+    )
+    conn.execute(
+        "update lab_indicadores.commands set status='completed', completed_at=now() where id=%s",
+        (command_id,),
+    )
+    conn.commit()
+    _event(
+        conn,
+        run_id,
+        "run_succeeded",
+        "Hermes proposal generated for review",
+        {
+            "artifact_type": "hermes_proposal",
+            "proposal_key": proposal["proposal_key"],
+            "sha256": proposal["artifact_sha256"],
+        },
+    )
 
 
 def _execute_preflight() -> dict:
@@ -306,16 +518,25 @@ def process_one(conn: psycopg.Connection) -> bool:
 
     run_id = str(command["run_id"])
     command_id = str(command["command_id"])
+    command_type = command["command_type"]
     manifest = command["dataset_manifest"]
-    if manifest != ALLOWED_MANIFEST:
+    if command_type == "start_run" and manifest != ALLOWED_MANIFEST:
         _fail_run(conn, run_id, command_id, f"manifest not allowed: {manifest}")
+        return True
+    if command_type == "start_research" and manifest != HERMES_CONTEXT_MANIFEST:
+        _fail_run(conn, run_id, command_id, f"research manifest not allowed: {manifest}")
         return True
 
     _register_worker(conn, "busy", {"run_id": run_id})
     try:
-        _start_run(conn, run_id)
-        result = _execute_preflight()
-        _succeed_run(conn, run_id, command_id, result)
+        if command_type == "start_research":
+            _start_run(conn, run_id, "research")
+            result = _execute_research(conn, run_id)
+            _succeed_research(conn, run_id, command_id, result)
+        else:
+            _start_run(conn, run_id)
+            result = _execute_preflight()
+            _succeed_run(conn, run_id, command_id, result)
     except Exception as exc:  # noqa: BLE001 - persist all job failures.
         conn.rollback()
         _fail_run(conn, run_id, command_id, str(exc))
@@ -336,6 +557,7 @@ def main(once: bool = False) -> int:
                 return 0
             while True:
                 _register_hermes(conn)
+                _ingest_hermes_proposals(conn)
                 if not process_one(conn):
                     time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:

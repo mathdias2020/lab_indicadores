@@ -1,0 +1,31 @@
+[Unit]
+Description=Indicator laboratory Hermes proposal engine
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=labadmin
+Group=labadmin
+WorkingDirectory=/srv/labs/projects/lab-b/hermes
+Environment=PYTHONUNBUFFERED=1
+Environment=HERMES_PROVIDER=fixture
+Environment=LAB_INDICADORES_HERMES_ROOT=/srv/labs/projects/lab-b/hermes
+ExecStartPre=/usr/bin/install -d -m 700 -o labadmin -g labadmin /srv/labs/projects/lab-b/hermes/inbox /srv/labs/projects/lab-b/hermes/outbox/proposals
+ExecStart=/usr/bin/python3 /srv/labs/projects/lab-b/hermes/proposal_engine.py --job-dir /srv/labs/projects/lab-b/hermes/inbox --provider fixture
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=
+ReadOnlyPaths=/srv/labs/projects/lab-b/hermes/context /srv/labs/datasets
+ReadWritePaths=/srv/labs/projects/lab-b/hermes/inbox /srv/labs/projects/lab-b/hermes/outbox
+

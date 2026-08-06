@@ -1,9 +1,8 @@
 """Isolated Hermes observation runtime for the indicator laboratory.
 
-This first runtime has one job: prove that Hermes can observe the development
-dataset and publish a verifiable heartbeat without network, Docker, Supabase,
-holdout, or execution access. The research engine is deliberately a later
-activation stage.
+This runtime publishes a verifiable heartbeat for the Hermes observation
+surface. Proposal generation remains a separate, short-lived service without
+network, Docker, Supabase, holdout, or execution access.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from pathlib import Path
 
 AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 PROFILE_ID = "lab-indicadores"
-VERSION = "0.1.0-bootstrap"
+VERSION = "0.2.0-proposal-bootstrap"
 HEARTBEAT_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_HEARTBEAT_SECONDS", "5"))
 DATASET_ROOT = Path(
     os.environ.get(
@@ -60,7 +59,7 @@ def _heartbeat_payload() -> dict:
         "mode": "observation",
         "profile_id": PROFILE_ID,
         "version": VERSION,
-        "capabilities": ["read_development_data", "heartbeat_only"],
+        "capabilities": ["read_development_data", "proposal_generation"],
         "metadata": {
             "project_id": "lab_indicadores",
             "execution_enabled": False,

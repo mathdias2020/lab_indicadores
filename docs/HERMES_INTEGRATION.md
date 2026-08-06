@@ -2,48 +2,53 @@
 
 ## Estado desta integração
 
-O laboratório agora possui o agente lógico hermes-indicadores, registrado no
-control plane e acompanhado pelo dashboard. A primeira ativação é
-observacional:
+O laboratório possui o agente lógico `hermes-indicadores`, registrado no
+control plane e acompanhado pelo dashboard. A integração está em duas camadas:
 
-- status: observing quando o heartbeat está saudável;
-- mode: observation;
-- fonte: somente /srv/labs/datasets/canonical/normalized_sample_v1;
-- escrita: somente /srv/labs/projects/lab-b/hermes/outbox;
-- holdout_access: false;
-- execution_enabled: false;
-- network_access: false;
-- docker_socket_access: false;
-- nenhuma credencial Supabase é entregue ao runtime.
+- `lab-indicadores-hermes-runtime.service`: heartbeat contínuo e observação do
+  dataset de desenvolvimento;
+- `lab-indicadores-hermes-engine.service`: serviço `oneshot` que consome um job
+  isolado e produz uma proposta versionada para revisão.
 
-O orquestrador deste laboratório lê o heartbeat local e atualiza
-lab_indicadores.agents. O browser acessa apenas
-public.dashboard_list_agents() com uma sessão autenticada.
+O primeiro job habilitado é um fixture reproduzível para a hipótese de
+absorção em WDO, fluxo + preço e intraday tático. Ele não é uma conclusão
+estatística nem uma promessa de resultado operacional.
 
-## O que ainda não está ativado
+## Contratos preservados
 
-O motor que analisa dados e propõe hipóteses não é iniciado neste primeiro
-passo. Ele será um processo separado, com:
+- holdout sempre fechado (`holdout_accessed: false`);
+- somente o contexto versionado `hermes-context-absorption-v1` pode iniciar
+  esta pesquisa;
+- propostas são hipóteses, com pergunta, mecanismo, plano de validação,
+  limitações, contexto e hashes;
+- o artefato é escrito apenas em
+  `/srv/labs/projects/lab-b/hermes/outbox/proposals`;
+- runtime e engine não recebem Supabase, rede, Docker socket ou capacidade de
+  executar ordens;
+- o banco registra a proposta em `lab_indicadores.proposals` com estado inicial
+  `in_review` e evidência `not_tested`;
+- aceitação, rejeição e qualquer mudança de definição continuam sendo revisão
+  humana explícita.
 
-1. contrato de contexto versionado;
-2. artefato de proposta com hash;
-3. revisão humana antes de qualquer alteração de indicador;
-4. separação explícita entre observação, proposta, pesquisa e revisão;
-5. nenhuma promoção automática para execução ou holdout.
+## Fluxo controlado
 
-Isso permite que o Hermes aprenda com resultados e proponha melhorias sem
-alterar silenciosamente a definição de um indicador, contaminar o holdout ou
-interferir no laboratório lab_automatizado.
+1. Usuário autenticado aciona “Gerar hipótese” no dashboard.
+2. `dashboard_enqueue_research` cria uma run e um comando idempotentes.
+3. O orquestrador reivindica o comando e grava um job no inbox do Hermes.
+4. O serviço oneshot valida o contexto e escreve o JSON canônico da proposta.
+5. O orquestrador valida o hash, registra a proposta e o artefato no Supabase.
+6. O dashboard exibe a proposta como “em revisão”.
 
-## Serviços e fronteiras
+O mesmo contrato poderá receber um provider analítico posteriormente, mas o
+provider LLM não é ativado nesta fase. A ativação dependerá de credencial
+específica, teste de saída estruturada, custo e revisão do isolamento.
+
+## Fronteiras
 
 | Item | Este laboratório | Outro laboratório |
 | --- | --- | --- |
-| agente | hermes-indicadores | fora do escopo deste projeto |
-| diretório | /srv/labs/projects/lab-b/hermes | não tocar |
-| tabela | lab_indicadores.agents | não tocar |
-| serviço | lab-indicadores-hermes-runtime.service | não tocar |
-| dados | /srv/labs/datasets, leitura | /srv/labs/datasets, leitura |
-
-O runtime atual não é o motor de hipóteses completo; é a camada de observação
-e prova de isolamento sobre a qual o motor será acoplado.
+| agente | `hermes-indicadores` | exclusivo do outro projeto |
+| diretório | `/srv/labs/projects/lab-b/hermes` | não tocar |
+| tabela | `lab_indicadores.agents` e `lab_indicadores.proposals` | não tocar |
+| serviços | `lab-indicadores-*` | não tocar |
+| dados | `/srv/labs/datasets`, leitura | `/srv/labs/datasets`, leitura |

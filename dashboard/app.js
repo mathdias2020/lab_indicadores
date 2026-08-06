@@ -3,12 +3,13 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const config = window.__LAB_CONFIG__ || {};
 const supabase = createClient(config.supabaseUrl, config.supabasePublishableKey);
 const $ = (selector) => document.querySelector(selector);
-const state = { session: null, runs: [], agents: [], selectedRun: null, timer: null };
+const state = { session: null, runs: [], agents: [], proposals: [], selectedRun: null, timer: null };
 
 const authPanel = $("#auth-panel");
 const dashboard = $("#dashboard");
 const authMessage = $("#auth-message");
 const runMessage = $("#run-message");
+const researchMessage = $("#research-message");
 
 function setMessage(element, message, kind = "") {
   element.textContent = message;
@@ -25,6 +26,12 @@ function setToast(message) {
 function makeRunKey() {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   return `dashboard-preflight-${stamp}`;
+}
+
+function makeResearchKey() {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `dashboard-research-${stamp}-${suffix}`;
 }
 
 function setSessionView(session) {
@@ -63,19 +70,23 @@ async function loadDashboard() {
   const refreshState = $("#refresh-state");
   refreshState.classList.add("is-syncing");
   try {
-    const [runsResult, workersResult, agentsResult] = await Promise.all([
+    const [runsResult, workersResult, agentsResult, proposalsResult] = await Promise.all([
       supabase.rpc("dashboard_list_runs", { p_limit: 30 }),
       supabase.rpc("dashboard_list_workers"),
       supabase.rpc("dashboard_list_agents"),
+      supabase.rpc("dashboard_list_proposals", { p_limit: 30 }),
     ]);
     if (runsResult.error) throw runsResult.error;
     if (workersResult.error) throw workersResult.error;
     if (agentsResult.error) throw agentsResult.error;
+    if (proposalsResult.error) throw proposalsResult.error;
     state.runs = runsResult.data || [];
     state.agents = agentsResult.data || [];
+    state.proposals = proposalsResult.data || [];
     renderRuns();
     renderWorkers(workersResult.data || []);
     renderAgents(state.agents);
+    renderProposals(state.proposals);
     renderPulse();
     if (state.selectedRun) await loadRunDetail(state.selectedRun.run_id, false);
     refreshState.innerHTML = '<span class="status-dot status-dot--live"></span>Atualizado agora';
@@ -137,6 +148,52 @@ function renderAgents(agents) {
       '<span><small>versão</small><b>' + escapeHtml(agent.version || "—") + '</b></span>' +
       '<span><small>heartbeat</small><b>' + (agent.last_heartbeat_at ? escapeHtml(formatDate(agent.last_heartbeat_at, true)) : "sem heartbeat") + '</b></span></div>' +
       '<div class="agent-guards">' + guards + "</div></article>";
+  }).join("");
+}
+
+function proposalStatusLabel(status) {
+  return {
+    draft: "rascunho",
+    in_review: "em revisão",
+    accepted: "aceita",
+    rejected: "rejeitada",
+    superseded: "substituída",
+    error: "erro",
+  }[status] || status || "desconhecida";
+}
+
+function proposalTrackLabel(track) {
+  return { flow: "fluxo", price: "preço", flow_price: "fluxo + preço" }[track] || track || "—";
+}
+
+function proposalHorizonLabel(horizon) {
+  return { scalping: "scalping", tactical_intraday: "intraday tático", broad_intraday: "intraday amplo" }[horizon] || horizon || "—";
+}
+
+function shortHash(value) {
+  return value ? `${value.slice(0, 12)}…${value.slice(-8)}` : "—";
+}
+
+function renderProposals(proposals) {
+  const grid = $("#proposals-grid");
+  $("#proposal-count").textContent = `${proposals.length} proposta${proposals.length === 1 ? "" : "s"}`;
+  if (!proposals.length) {
+    grid.innerHTML = '<div class="proposal-empty">Nenhuma proposta registrada neste laboratório ainda.</div>';
+    return;
+  }
+  grid.innerHTML = proposals.map((proposal) => {
+    const plan = proposal.validation_plan || {};
+    const gates = Array.isArray(plan.gates) ? plan.gates.join(" / ") : "protocolo registrado";
+    return `<article class="proposal-card">
+      <div class="proposal-card__top">
+        <div><p class="eyebrow">${escapeHtml(proposal.proposal_key)}</p><h3>${escapeHtml(proposal.title)}</h3></div>
+        <span class="${statusClass(proposal.status)}"><span class="status-dot"></span>${escapeHtml(proposalStatusLabel(proposal.status))}</span>
+      </div>
+      <div class="proposal-meta"><span>${escapeHtml(proposal.asset)}</span><span>${escapeHtml(proposalTrackLabel(proposal.track))}</span><span>${escapeHtml(proposalHorizonLabel(proposal.horizon))}</span></div>
+      <p class="proposal-summary"><strong>Pergunta</strong>${escapeHtml(proposal.question)}</p>
+      <p class="proposal-hypothesis"><strong>Hipótese</strong>${escapeHtml(proposal.hypothesis)}</p>
+      <div class="proposal-foot"><span><small>evidência</small><b>${escapeHtml(proposal.evidence_level || "not_tested")}</b></span><span><small>gates</small><b>${escapeHtml(gates)}</b></span><span><small>holdout</small><b>fechado</b></span><span><small>hash</small><b title="${escapeHtml(proposal.proposal_sha256 || "")}">${escapeHtml(shortHash(proposal.proposal_sha256))}</b></span></div>
+    </article>`;
   }).join("");
 }
 
@@ -240,6 +297,27 @@ $("#run-form").addEventListener("submit", async (event) => {
   setMessage(runMessage, data?.[0]?.existing ? "Essa chave já existe; a run original foi preservada." : "Preflight enfileirado.", "success");
   setToast(data?.[0]?.existing ? "Idempotência preservada" : "Comando enviado ao worker");
   await loadDashboard();
+});
+
+$("#research-button").addEventListener("click", async () => {
+  const button = $("#research-button");
+  button.disabled = true;
+  setMessage(researchMessage, "Gerando comando de pesquisa…");
+  const key = makeResearchKey();
+  const { data, error } = await supabase.rpc("dashboard_enqueue_research", {
+    p_idempotency_key: key,
+    p_run_key: key,
+    p_requested_by: "dashboard",
+  });
+  if (error) {
+    setMessage(researchMessage, error.message, "error");
+    button.disabled = false;
+    return;
+  }
+  setMessage(researchMessage, data?.[0]?.existing ? "Essa pesquisa já existe; a run original foi preservada." : "Pesquisa enfileirada para o Hermes.", "success");
+  setToast(data?.[0]?.existing ? "Idempotência preservada" : "Pesquisa enviada ao Hermes");
+  await loadDashboard();
+  button.disabled = false;
 });
 
 window.addEventListener("keydown", (event) => { if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && document.activeElement.tagName !== "INPUT") loadDashboard(); });

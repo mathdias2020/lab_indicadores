@@ -1,0 +1,62 @@
+{
+  "context_version": "indicator-research-context-v1",
+  "context_id": "absorption-baseline-v1",
+  "asset": "WDO",
+  "track": "flow_price",
+  "horizon": "tactical_intraday",
+  "evidence_target": "descriptive",
+  "title": "Absorcao: agressao relevante sem deslocamento proporcional",
+  "question": "Quando agressao relevante encontra resistencia, o preco deixa de deslocar proporcionalmente no mesmo intervalo?",
+  "mechanism": "Ordens agressoras consumem liquidez disponivel, mas a reposicao passiva ou a liquidez de outros participantes limita o deslocamento observado.",
+  "hypothesis": "Eventos com agressao extrema, deslocamento contemporaneo pequeno e concentracao de atuacao no nivel podem ser descritos como absorcao; isso ainda nao afirma direcao futura.",
+  "eligible_period": {
+    "discovery": "2016-2022",
+    "development_validation": "2023-2024",
+    "holdout": "2025-2026"
+  },
+  "features": [
+    "aggression_net",
+    "passive_net",
+    "auction_net",
+    "price_displacement",
+    "player_concentration",
+    "level_persistence"
+  ],
+  "separate_components": [
+    "aggression",
+    "passive",
+    "auction",
+    "rlp",
+    "direct_trades"
+  ],
+  "baselines": [
+    "price_only",
+    "market_aggression",
+    "time_and_volatility_matched"
+  ],
+  "nulls": [
+    "random_stratified_events",
+    "clustered_session_blocks"
+  ],
+  "multiplicity": {
+    "assets": 1,
+    "tracks": 1,
+    "horizons": 1,
+    "primary_variants": 1
+  },
+  "gates": [
+    "descriptive",
+    "explanatory",
+    "predictive",
+    "operational"
+  ],
+  "forbidden": [
+    "holdout_feature_selection",
+    "lookahead_normalization",
+    "automatic_indicator_promotion",
+    "order_execution",
+    "profit_claim"
+  ],
+  "holdout_accessed": false,
+  "review_required": true
+}

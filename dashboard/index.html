@@ -37,6 +37,7 @@
         </div>
 
         <nav class="nav-list">
+          <a class="nav-item" href="#proposals"><span class="nav-icon" aria-hidden="true">✦</span>Propostas</a>
           <a class="nav-item nav-item--active" href="#cockpit"><span class="nav-icon" aria-hidden="true">◌</span>Cockpit</a>
           <a class="nav-item" href="#runs"><span class="nav-icon" aria-hidden="true">≡</span>Runs</a>
           <a class="nav-item" href="#agents"><span class="nav-icon" aria-hidden="true">◇</span>Agentes</a>
@@ -152,10 +153,30 @@
                 <p class="eyebrow">Supervisão de agentes</p>
                 <h2>Hermes e os limites do laboratório</h2>
               </div>
-              <span class="section-count" id="agent-count">0 agentes</span>
+              <div class="section-heading__actions">
+                <span class="section-count" id="agent-count">0 agentes</span>
+              </div>
             </div>
             <div class="agents-grid" id="agents-grid">
               <div class="agent-empty">Carregando estado dos agentes…</div>
+            </div>
+          </section>
+
+          <section class="proposals-section" id="proposals">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Caderno de hipóteses</p>
+                <h2>Propostas do Hermes</h2>
+              </div>
+              <div class="section-heading__actions">
+                <span class="section-count" id="proposal-count">0 propostas</span>
+                <button class="button button--quiet button--compact" id="research-button" type="button">Gerar hipótese <span aria-hidden="true">→</span></button>
+              </div>
+            </div>
+            <p class="section-lede">Cada proposta nasce como hipótese não testada, com contexto, mecanismo, limites e hash. Nenhuma altera definição ou abre o holdout sozinha.</p>
+            <p class="form-message" id="research-message" role="status"></p>
+            <div class="proposals-grid" id="proposals-grid">
+              <div class="proposal-empty">Carregando propostas…</div>
             </div>
           </section>
 

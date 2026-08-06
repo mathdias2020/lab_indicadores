@@ -37,7 +37,8 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 
 ## Estado atual
 
-- Fase: control plane v1 e preflight reproduzível.
+- Fase: control plane v1, preflight reproduzível e primeiro contrato de
+  proposta do Hermes.
 - VPS e Supabase: infraestrutura compartilhada; este laboratório usa apenas seu
   caminho, schema e credenciais lógicas exclusivos.
 - Parquets: entrada global comum, sempre montada como somente leitura; nenhum
@@ -52,7 +53,9 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 
 O runtime observacional hermes-indicadores está ativo em
 /srv/labs/projects/lab-b/hermes, sem rede, holdout, Docker socket ou
-capacidade de execução; o painel acompanha seu heartbeat.
+capacidade de execução; o painel acompanha seu heartbeat. O gerador de
+propostas é um serviço separado, sem rede, que produz apenas hipóteses
+versionadas para revisão humana.
 
 ## Documentos
 
@@ -64,4 +67,5 @@ capacidade de execução; o painel acompanha seu heartbeat.
 - [`CONTROL_PLANE_V1.md`](docs/CONTROL_PLANE_V1.md)
 - [`ORCHESTRATOR.md`](docs/ORCHESTRATOR.md)
 - [`VPS_REGISTRATION.md`](docs/VPS_REGISTRATION.md)
+- [`HERMES_INTEGRATION.md`](docs/HERMES_INTEGRATION.md)
 - [`dashboard/README.md`](dashboard/README.md)
