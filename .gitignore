@@ -23,3 +23,6 @@ logs/
 *.key
 id_ed25519*
 secrets/
+
+.vercel
+.env*
