@@ -3,7 +3,7 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const config = window.__LAB_CONFIG__ || {};
 const supabase = createClient(config.supabaseUrl, config.supabasePublishableKey);
 const $ = (selector) => document.querySelector(selector);
-const state = { session: null, runs: [], selectedRun: null, timer: null };
+const state = { session: null, runs: [], agents: [], selectedRun: null, timer: null };
 
 const authPanel = $("#auth-panel");
 const dashboard = $("#dashboard");
@@ -63,15 +63,19 @@ async function loadDashboard() {
   const refreshState = $("#refresh-state");
   refreshState.classList.add("is-syncing");
   try {
-    const [runsResult, workersResult] = await Promise.all([
+    const [runsResult, workersResult, agentsResult] = await Promise.all([
       supabase.rpc("dashboard_list_runs", { p_limit: 30 }),
       supabase.rpc("dashboard_list_workers"),
+      supabase.rpc("dashboard_list_agents"),
     ]);
     if (runsResult.error) throw runsResult.error;
     if (workersResult.error) throw workersResult.error;
+    if (agentsResult.error) throw agentsResult.error;
     state.runs = runsResult.data || [];
+    state.agents = agentsResult.data || [];
     renderRuns();
     renderWorkers(workersResult.data || []);
+    renderAgents(state.agents);
     renderPulse();
     if (state.selectedRun) await loadRunDetail(state.selectedRun.run_id, false);
     refreshState.innerHTML = '<span class="status-dot status-dot--live"></span>Atualizado agora';
@@ -90,6 +94,50 @@ function renderWorkers(workers) {
   $("#worker-status").textContent = worker?.status || "offline";
   $("#worker-heartbeat").textContent = worker?.last_heartbeat_at ? `heartbeat ${formatDate(worker.last_heartbeat_at)}` : "sem heartbeat";
   $("#queue-count").textContent = state.runs.filter((run) => run.status === "queued").length;
+}
+
+function agentStatusLabel(status) {
+  return {
+    prepared: "preparado",
+    offline: "offline",
+    online: "online",
+    observing: "observando",
+    proposing: "propondo",
+    busy: "ocupado",
+    degraded: "degradado",
+    error: "erro",
+  }[status] || status || "desconhecido";
+}
+
+function agentModeLabel(mode) {
+  return { observation: "observação", proposal: "proposta", research: "pesquisa", review: "revisão" }[mode] || mode || "—";
+}
+
+function renderAgents(agents) {
+  const grid = $("#agents-grid");
+  $("#agent-count").textContent = agents.length + " agente" + (agents.length === 1 ? "" : "s");
+  if (!agents.length) {
+    grid.innerHTML = '<div class="agent-empty">Nenhum agente registrado neste laboratório.</div>';
+    return;
+  }
+  grid.innerHTML = agents.map((agent) => {
+    const metadata = agent.metadata || {};
+    const safe = [
+      ["holdout", metadata.holdout_access === false ? "fechado" : "não declarado"],
+      ["rede", metadata.network_access === false ? "bloqueada" : "não declarada"],
+      ["execução", metadata.execution_enabled === false ? "desativada" : "não declarada"],
+    ];
+    const dataset = metadata.dataset_files === undefined ? "escopo registrado" : metadata.dataset_files + " arquivos observados";
+    const guards = safe.map(([label, value]) => '<span><i class="status-dot status-dot--live"></i>' + label + ": " + value + "</span>").join("");
+    return '<article class="agent-card agent-card--' + escapeHtml(agent.status || "offline") + '">' +
+      '<div class="agent-card__top"><div><p class="eyebrow">' + escapeHtml(agent.agent_type || "agent") + '</p><h3>' + escapeHtml(agent.agent_id) + '</h3></div>' +
+      '<span class="' + statusClass(agent.status) + '"><span class="status-dot"></span>' + escapeHtml(agentStatusLabel(agent.status)) + '</span></div>' +
+      '<p class="agent-summary">Modo <strong>' + escapeHtml(agentModeLabel(agent.mode)) + '</strong> · ' + escapeHtml(dataset) + '</p>' +
+      '<div class="agent-facts"><span><small>perfil</small><b>' + escapeHtml(agent.profile_id || "—") + '</b></span>' +
+      '<span><small>versão</small><b>' + escapeHtml(agent.version || "—") + '</b></span>' +
+      '<span><small>heartbeat</small><b>' + (agent.last_heartbeat_at ? escapeHtml(formatDate(agent.last_heartbeat_at, true)) : "sem heartbeat") + '</b></span></div>' +
+      '<div class="agent-guards">' + guards + "</div></article>";
+  }).join("");
 }
 
 function renderRuns() {

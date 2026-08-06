@@ -1,0 +1,36 @@
+[Unit]
+Description=Indicator laboratory Hermes observation runtime
+After=local-fs.target
+
+[Service]
+Type=simple
+User=labadmin
+Group=labadmin
+WorkingDirectory=/srv/labs/projects/lab-b/hermes
+Environment=PYTHONUNBUFFERED=1
+Environment=LAB_INDICADORES_HERMES_ROOT=/srv/labs/projects/lab-b/hermes
+Environment=LAB_INDICADORES_DATASET_ROOT=/srv/labs/datasets/canonical/normalized_sample_v1
+Environment=LAB_INDICADORES_HERMES_HEARTBEAT_SECONDS=5
+ExecStartPre=/usr/bin/install -d -m 700 -o labadmin -g labadmin /srv/labs/projects/lab-b/hermes/outbox
+ExecStart=/usr/bin/python3 /srv/labs/projects/lab-b/hermes/runtime.py
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+CapabilityBoundingSet=
+ReadOnlyPaths=/srv/labs/datasets
+ReadWritePaths=/srv/labs/projects/lab-b/hermes
+
+[Install]
+WantedBy=multi-user.target

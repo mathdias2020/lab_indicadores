@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
@@ -29,6 +30,12 @@ JOB_TIMEOUT_SECONDS = int(
 )
 REPORT_PATH = LAB_ROOT / "runs" / "indicator-lab-preflight-v1" / "preflight-report.json"
 LOG_ROOT = LAB_ROOT / "logs" / "orchestrator"
+HERMES_AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
+HERMES_HEARTBEAT_PATH = LAB_ROOT / "hermes" / "outbox" / "heartbeat.json"
+HERMES_STALE_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_STALE_SECONDS", "30"))
+HERMES_CAPABILITIES = ["read_development_data", "heartbeat_only"]
+HERMES_ALLOWED_STATUSES = {"observing", "proposing", "degraded", "error"}
+HERMES_ALLOWED_MODES = {"observation", "proposal", "research", "review"}
 
 
 def _database_url() -> str:
@@ -86,6 +93,100 @@ def _register_worker(conn: psycopg.Connection, status: str, metadata: dict | Non
             json.dumps(["preflight"], sort_keys=True),
             "control-plane-v1",
             json.dumps(metadata or {}, sort_keys=True),
+        ),
+    )
+    conn.commit()
+
+
+def _read_hermes_heartbeat() -> dict:
+    base_metadata = {
+        "project_id": PROJECT_NAME,
+        "profile_id": "lab-indicadores",
+        "holdout_access": False,
+        "service_role_access": False,
+        "docker_socket_access": False,
+        "network_access": False,
+        "execution_enabled": False,
+        "scope": "canonical/development-only",
+    }
+    if not HERMES_HEARTBEAT_PATH.is_file():
+        return {
+            "status": "offline",
+            "mode": "observation",
+            "version": "0.1.0-bootstrap",
+            "capabilities": HERMES_CAPABILITIES,
+            "metadata": {**base_metadata, "reason": "heartbeat file not found"},
+            "last_heartbeat_at": None,
+        }
+
+    try:
+        payload = json.loads(HERMES_HEARTBEAT_PATH.read_text(encoding="utf-8"))
+        if payload.get("kind") != "hermes_heartbeat_v1":
+            raise ValueError("unsupported heartbeat kind")
+        if payload.get("agent_id") != HERMES_AGENT_ID:
+            raise ValueError("heartbeat agent id mismatch")
+
+        file_mtime = HERMES_HEARTBEAT_PATH.stat().st_mtime
+        heartbeat_at = datetime.fromtimestamp(file_mtime, tz=timezone.utc)
+        age_seconds = max(0, time.time() - file_mtime)
+        status = payload.get("status", "error")
+        mode = payload.get("mode", "observation")
+        if status not in HERMES_ALLOWED_STATUSES:
+            raise ValueError(f"unsupported heartbeat status: {status}")
+        if mode not in HERMES_ALLOWED_MODES:
+            raise ValueError(f"unsupported heartbeat mode: {mode}")
+
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("heartbeat metadata must be an object")
+        merged_metadata = {**base_metadata, **metadata, "heartbeat_age_seconds": round(age_seconds, 1)}
+        if age_seconds > HERMES_STALE_SECONDS:
+            status = "degraded"
+            merged_metadata["reason"] = "heartbeat is stale"
+
+        return {
+            "status": status,
+            "mode": mode,
+            "version": str(payload.get("version", "0.1.0-bootstrap")),
+            "capabilities": payload.get("capabilities") or HERMES_CAPABILITIES,
+            "metadata": merged_metadata,
+            "last_heartbeat_at": heartbeat_at,
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "status": "error",
+            "mode": "observation",
+            "version": "0.1.0-bootstrap",
+            "capabilities": HERMES_CAPABILITIES,
+            "metadata": {**base_metadata, "reason": f"invalid heartbeat: {exc}"},
+            "last_heartbeat_at": None,
+        }
+
+
+def _register_hermes(conn: psycopg.Connection) -> None:
+    heartbeat = _read_hermes_heartbeat()
+    conn.execute(
+        """
+        insert into lab_indicadores.agents
+          (agent_id, agent_type, status, mode, profile_id, version,
+           capabilities, metadata, last_heartbeat_at)
+        values (%s, 'hermes', %s, %s, 'lab-indicadores', %s, %s::jsonb, %s::jsonb, %s)
+        on conflict (agent_id) do update set
+          status = excluded.status,
+          mode = excluded.mode,
+          version = excluded.version,
+          capabilities = excluded.capabilities,
+          metadata = excluded.metadata,
+          last_heartbeat_at = excluded.last_heartbeat_at
+        """,
+        (
+            HERMES_AGENT_ID,
+            heartbeat["status"],
+            heartbeat["mode"],
+            heartbeat["version"],
+            json.dumps(heartbeat["capabilities"], sort_keys=True),
+            json.dumps(heartbeat["metadata"], sort_keys=True),
+            heartbeat["last_heartbeat_at"],
         ),
     )
     conn.commit()
@@ -227,12 +328,14 @@ def process_one(conn: psycopg.Connection) -> bool:
 def main(once: bool = False) -> int:
     with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
         _register_worker(conn, "online")
+        _register_hermes(conn)
         try:
             if once:
                 processed = process_one(conn)
                 print("orchestrator_once=" + ("processed" if processed else "idle"))
                 return 0
             while True:
+                _register_hermes(conn)
                 if not process_one(conn):
                     time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:
