@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -47,7 +48,11 @@ def _sha256(path: Path) -> str:
 
 def _event(conn: psycopg.Connection, run_id: str, event_type: str, message: str, payload: dict) -> None:
     conn.execute(
-        "select lab_indicadores.record_event(%s, %s, %s, %s::jsonb)",
+        """
+        insert into lab_indicadores.events
+          (run_id, event_type, message, payload)
+        values (%s, %s, %s, %s::jsonb)
+        """,
         (run_id, event_type, message, json.dumps(payload, sort_keys=True)),
     )
     conn.commit()
@@ -206,29 +211,36 @@ def process_one(conn: psycopg.Connection) -> bool:
         return True
 
     _register_worker(conn, "busy", {"run_id": run_id})
-    _start_run(conn, run_id)
     try:
+        _start_run(conn, run_id)
         result = _execute_preflight()
         _succeed_run(conn, run_id, command_id, result)
     except Exception as exc:  # noqa: BLE001 - persist all job failures.
         conn.rollback()
         _fail_run(conn, run_id, command_id, str(exc))
     finally:
+        conn.rollback()
         _register_worker(conn, "online")
     return True
 
 
-def main() -> int:
+def main(once: bool = False) -> int:
     with psycopg.connect(_database_url(), row_factory=dict_row) as conn:
         _register_worker(conn, "online")
         try:
+            if once:
+                processed = process_one(conn)
+                print("orchestrator_once=" + ("processed" if processed else "idle"))
+                return 0
             while True:
                 if not process_one(conn):
                     time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:
             _register_worker(conn, "offline", {"reason": "keyboard_interrupt"})
+        finally:
+            _register_worker(conn, "offline")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(once="--once" in sys.argv[1:]))

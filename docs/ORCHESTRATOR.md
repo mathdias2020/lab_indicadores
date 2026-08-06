@@ -17,16 +17,17 @@ sem Supabase, sem `docker.sock`, sem rede e com Parquets somente leitura.
    ```
 
 5. Valida o relatório, `holdout_accessed=false` e o caminho esperado.
-6. Persiste evento, artefato com SHA-256, sucesso ou erro.
+6. Persiste evento diretamente sob a política RLS do usuário dedicado, além do
+   artefato com SHA-256, sucesso ou erro.
 
 O payload do comando não vira shell livre. Novos tipos de job precisam de um
 novo contrato versionado e de uma allowlist explícita.
 
-## Instalação futura na VPS
+## Instalação na VPS
 
-Ainda não instalar ou iniciar como serviço até existir uma credencial server-side
-do banco provisionada no ambiente da VPS. A credencial não deve ser enviada no
-chat, versionada ou exposta ao painel.
+A credencial server-side foi provisionada fora do Git, em
+`/etc/lab-indicadores/orchestrator.env`, com modo `600`. Ela não deve ser
+enviada no chat, versionada ou exposta ao painel.
 
 ```bash
 cd /srv/labs/projects/lab-b
@@ -36,3 +37,11 @@ work/orchestrator-venv/bin/pip install -r requirements-orchestrator.txt
 
 Depois, o processo deve ser executado com `PYTHONPATH=/srv/labs/projects/lab-b/src`
 e `LAB_INDICADORES_DATABASE_URL` injetada por um arquivo de ambiente protegido.
+
+A unidade versionada em `ops/lab-indicadores-orchestrator.service` mantém um
+único processo contínuo, como `labadmin`, com reinício em falha e escrita apenas
+na árvore do laboratório.
+
+Para um diagnóstico sem consumir a fila, use a opção `--once`; ela registra o
+worker como online, verifica a conexão e retorna `orchestrator_once=idle` se não
+houver comando pendente.

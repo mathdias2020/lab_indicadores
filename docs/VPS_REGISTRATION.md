@@ -41,7 +41,7 @@ Status: `PREFLIGHT_SUCCEEDED` (nenhum container persistente)
 - entrada: `python /app/src/lab_indicadores/worker.py`
 - primeiro comando permitido: `smoke`
 - estado atual: registrado e executado como container descartavel (`run --rm`)
-- orquestrador: implementado host-side, ainda nao iniciado; aguarda credencial server-side do banco
+- orquestrador: host-side instalado como unidade systemd, com credencial server-side fora do Git
 
 ## 6. Dataset do preflight
 

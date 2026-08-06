@@ -45,7 +45,7 @@ referenced by URI plus SHA-256.
 ## Access boundary
 
 - panel users: authenticated, owner-scoped read access;
-- orchestrator: server-side service role or Postgres service credential;
+- orchestrator: dedicated Postgres login scoped to the `lab_indicadores` schema;
 - worker: no Supabase credential unless a future job explicitly requires it;
 - raw Parquets: mounted read-only;
 - artifacts: only under `lab-b`;

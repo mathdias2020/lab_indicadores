@@ -1,0 +1,24 @@
+[Unit]
+Description=Indicator laboratory control-plane orchestrator
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=labadmin
+Group=labadmin
+WorkingDirectory=/srv/labs/projects/lab-b
+EnvironmentFile=/etc/lab-indicadores/orchestrator.env
+Environment=PYTHONPATH=/srv/labs/projects/lab-b/src
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/labs/projects/lab-b/work/orchestrator-venv/bin/python -m lab_indicadores.orchestrator
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/srv/labs/projects/lab-b
+
+[Install]
+WantedBy=multi-user.target

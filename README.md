@@ -45,8 +45,8 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 - Código, DuckDBs, resultados, logs e artefatos: exclusivos de cada laboratório.
 - O schema `lab_indicadores` e seu contrato de fila já foram aplicados no
   Supabase compartilhado. O painel ainda não foi implementado.
-- O orquestrador host-side está versionado, mas não foi iniciado até que uma
-  credencial server-side do banco seja provisionada com segurança na VPS.
+- O orquestrador host-side está instalado como serviço systemd, conectado ao
+  Supabase com usuário PostgreSQL exclusivo e ativo no boot.
 
 ## Documentos
 
