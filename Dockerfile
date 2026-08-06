@@ -8,6 +8,9 @@ WORKDIR /app
 
 COPY src /app/src
 COPY manifests /app/manifests
+COPY requirements-worker.txt /app/requirements-worker.txt
+
+RUN pip install --no-cache-dir -r /app/requirements-worker.txt
 
 # scp may preserve private directory modes from the host checkout. Normalize
 # image readability before dropping to the non-root worker UID.

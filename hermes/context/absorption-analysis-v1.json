@@ -1,0 +1,56 @@
+{
+  "context_version": "indicator-analysis-context-v1",
+  "context_id": "absorption-descriptive-baseline-v1",
+  "analysis_id": "absorption-descriptive-baseline-v1",
+  "dataset_manifest": "hermes-analysis-absorption-v1",
+  "asset": "WDO",
+  "track": "flow_price",
+  "horizon": "tactical_intraday",
+  "period_scope": "discovery_smoke_2016_01",
+  "question": "Em janelas de um minuto, agressão concentrada e relevante aparece acompanhada de deslocamento contemporâneo pequeno?",
+  "mechanism": "Agressão consome liquidez, mas reposição passiva ou liquidez de outros participantes pode limitar o deslocamento observado.",
+  "files": [
+    {
+      "asset": "WDO",
+      "path": "expanded_sample_v1/raw/wdofut/2016-01.parquet",
+      "bytes": 20097276,
+      "sha256": "1ea4eeae7b2383379cf3c3c855025d762a4d21f53bd3f3852f8da25e5509c160"
+    }
+  ],
+  "source_columns": {
+    "timestamp": ["date", "time"],
+    "sequence": "trade_number",
+    "price": "price",
+    "size": "qty",
+    "trade_type": "trade_type",
+    "buyer": "buy_agent",
+    "seller": "sell_agent"
+  },
+  "parameters": {
+    "window_seconds": 60,
+    "min_trade_count": 10,
+    "aggression_quantile": 0.95,
+    "displacement_quantile": 0.35,
+    "player_concentration_hhi_min": 0.2,
+    "level_persistence_min": 0.5
+  },
+  "coverage_contract": {
+    "aggression": "available_from_trade_type",
+    "price": "available",
+    "player_concentration": "available_from_aggressor_side_agent",
+    "passive_net": null,
+    "rlp": null,
+    "direct_trades": "cross_trade_only"
+  },
+  "evidence_target": "descriptive",
+  "future_labels": false,
+  "holdout_accessed": false,
+  "review_required": true,
+  "forbidden": [
+    "holdout_feature_selection",
+    "lookahead_normalization",
+    "automatic_indicator_promotion",
+    "order_execution",
+    "profit_claim"
+  ]
+}

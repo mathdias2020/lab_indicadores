@@ -41,6 +41,9 @@ HERMES_CONTEXT_PATH = LAB_ROOT / "hermes" / "context" / "absorption-research-v1.
 HERMES_INBOX_PATH = LAB_ROOT / "hermes" / "inbox"
 HERMES_PROPOSAL_ROOT = LAB_ROOT / "hermes" / "outbox" / "proposals"
 HERMES_ENGINE_SERVICE = "lab-indicadores-hermes-engine.service"
+ANALYSIS_MANIFEST = "hermes-analysis-absorption-v1"
+ANALYSIS_CONTEXT_PATH = LAB_ROOT / "hermes" / "context" / "absorption-analysis-v1.json"
+ANALYSIS_INBOX_PATH = LAB_ROOT / "work" / "analysis" / "inbox"
 
 
 def _database_url() -> str:
@@ -95,7 +98,7 @@ def _register_worker(conn: psycopg.Connection, status: str, metadata: dict | Non
         (
             WORKER_ID,
             status,
-            json.dumps(["preflight"], sort_keys=True),
+            json.dumps(["preflight", "analysis"], sort_keys=True),
             "control-plane-v1",
             json.dumps(metadata or {}, sort_keys=True),
         ),
@@ -321,7 +324,10 @@ def _start_run(conn: psycopg.Connection, run_id: str, run_type: str = "preflight
         (run_id,),
     )
     conn.commit()
-    message = "Hermes research proposal started" if run_type == "research" else "Preflight worker started"
+    message = {
+        "research": "Hermes research proposal started",
+        "analysis": "Deterministic indicator analysis started",
+    }.get(run_type, "Preflight worker started")
     _event(conn, run_id, "run_started", message, {"worker_id": WORKER_ID, "run_type": run_type})
 
 
@@ -482,6 +488,154 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
     )
 
 
+def _execute_analysis(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
+    if not ANALYSIS_CONTEXT_PATH.is_file():
+        raise FileNotFoundError(ANALYSIS_CONTEXT_PATH)
+    context = json.loads(ANALYSIS_CONTEXT_PATH.read_text(encoding="utf-8"))
+    if context.get("context_id") != "absorption-descriptive-baseline-v1":
+        raise ValueError("unsupported analysis context")
+    if context.get("dataset_manifest") != ANALYSIS_MANIFEST:
+        raise ValueError("analysis context manifest mismatch")
+    if context.get("holdout_accessed") is not False:
+        raise ValueError("analysis context opened the holdout")
+
+    proposal_key = str(payload.get("proposal_key") or "")
+    run = conn.execute(
+        "select owner_id from lab_indicadores.runs where id=%s",
+        (run_id,),
+    ).fetchone()
+    if not run:
+        raise RuntimeError(f"analysis run not found: {run_id}")
+    proposal = conn.execute(
+        """
+        select proposal_key, status, owner_id
+        from lab_indicadores.proposals
+        where proposal_key=%s
+        """,
+        (proposal_key,),
+    ).fetchone()
+    if not proposal or proposal["owner_id"] != run["owner_id"]:
+        raise RuntimeError("analysis proposal does not belong to the run owner")
+    if proposal["status"] not in {"in_review", "accepted"}:
+        raise RuntimeError(f"proposal is not eligible for analysis: {proposal['status']}")
+
+    ANALYSIS_INBOX_PATH.mkdir(parents=True, exist_ok=True)
+    job_path = ANALYSIS_INBOX_PATH / f"{run_id}.json"
+    job = {
+        "kind": "indicator_analysis_job_v1",
+        "project_id": PROJECT_NAME,
+        "run_id": run_id,
+        "analysis_id": context["analysis_id"],
+        "proposal_key": proposal_key,
+        "dataset_manifest": ANALYSIS_MANIFEST,
+        "asset": context["asset"],
+        "track": context["track"],
+        "horizon": context["horizon"],
+        "files": context["files"],
+        "parameters": context["parameters"],
+        "holdout_accessed": False,
+    }
+    temporary_path = job_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary_path, job_path)
+
+    log_path = LOG_ROOT / f"analysis-{run_id}.log"
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    command = [
+        "sudo",
+        "-n",
+        "docker",
+        "compose",
+        "-p",
+        PROJECT_NAME,
+        "run",
+        "--rm",
+        "indicator-worker",
+        "analysis",
+        f"/app/work/analysis/inbox/{run_id}.json",
+    ]
+    with log_path.open("ab") as log_handle:
+        completed = subprocess.run(
+            command,
+            cwd=LAB_ROOT,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            check=False,
+            timeout=JOB_TIMEOUT_SECONDS,
+        )
+    if completed.returncode != 0:
+        raise RuntimeError(f"analysis job exited with code {completed.returncode}; log={log_path}")
+    report_path = LAB_ROOT / "runs" / run_id / "analysis-report.json"
+    if not report_path.is_file():
+        raise FileNotFoundError(report_path)
+    return {"report": report_path, "log": log_path}
+
+
+def _succeed_analysis(conn: psycopg.Connection, run_id: str, command_id: str, result: dict) -> None:
+    report = Path(result["report"]).resolve()
+    expected_root = (LAB_ROOT / "runs" / run_id).resolve()
+    if not report.is_file() or not report.is_relative_to(expected_root):
+        raise RuntimeError("unexpected deterministic analysis report path")
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    if (
+        payload.get("kind") != "indicator_analysis_report_v1"
+        or payload.get("status") != "succeeded"
+        or payload.get("run_id") != run_id
+        or payload.get("holdout_accessed") is not False
+        or payload.get("evidence_level") != "descriptive"
+    ):
+        raise RuntimeError("analysis report failed the descriptive/holdout contract")
+    artifact_hash = payload.get("artifact_sha256")
+    payload_without_hash = {key: value for key, value in payload.items() if key != "artifact_sha256"}
+    if artifact_hash != hashlib.sha256(_canonical_json(payload_without_hash)).hexdigest():
+        raise RuntimeError("analysis report artifact hash mismatch")
+
+    report_sha256 = _sha256(report)
+    conn.execute(
+        """
+        insert into lab_indicadores.artifacts
+          (run_id, artifact_type, uri, sha256, metadata)
+        values (%s, 'indicator_analysis_report', %s, %s, %s::jsonb)
+        """,
+        (
+            run_id,
+            str(report),
+            report_sha256,
+            json.dumps(
+                {
+                    "analysis_id": payload.get("analysis_id"),
+                    "proposal_key": payload.get("proposal_key"),
+                    "evidence_level": payload.get("evidence_level"),
+                    "candidate_windows_returned": payload.get("coverage", {}).get("candidate_windows_returned"),
+                    "artifact_sha256": artifact_hash,
+                    "holdout_accessed": False,
+                },
+                sort_keys=True,
+            ),
+        ),
+    )
+    conn.execute(
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=now(), finished_at=now() where id=%s",
+        (run_id,),
+    )
+    conn.execute(
+        "update lab_indicadores.commands set status='completed', completed_at=now() where id=%s",
+        (command_id,),
+    )
+    conn.commit()
+    _event(
+        conn,
+        run_id,
+        "run_succeeded",
+        "Deterministic descriptive analysis completed",
+        {
+            "artifact_type": "indicator_analysis_report",
+            "sha256": report_sha256,
+            "candidate_windows_returned": payload.get("coverage", {}).get("candidate_windows_returned"),
+        },
+    )
+
+
 def _execute_preflight() -> dict:
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
     log_path = LOG_ROOT / "indicator-lab-preflight.log"
@@ -526,6 +680,9 @@ def process_one(conn: psycopg.Connection) -> bool:
     if command_type == "start_research" and manifest != HERMES_CONTEXT_MANIFEST:
         _fail_run(conn, run_id, command_id, f"research manifest not allowed: {manifest}")
         return True
+    if command_type == "start_analysis" and manifest != ANALYSIS_MANIFEST:
+        _fail_run(conn, run_id, command_id, f"analysis manifest not allowed: {manifest}")
+        return True
 
     _register_worker(conn, "busy", {"run_id": run_id})
     try:
@@ -533,6 +690,10 @@ def process_one(conn: psycopg.Connection) -> bool:
             _start_run(conn, run_id, "research")
             result = _execute_research(conn, run_id)
             _succeed_research(conn, run_id, command_id, result)
+        elif command_type == "start_analysis":
+            _start_run(conn, run_id, "analysis")
+            result = _execute_analysis(conn, run_id, command["payload"] or {})
+            _succeed_analysis(conn, run_id, command_id, result)
         else:
             _start_run(conn, run_id)
             result = _execute_preflight()

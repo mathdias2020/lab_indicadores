@@ -37,8 +37,8 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 
 ## Estado atual
 
-- Fase: control plane v1, preflight reproduzível e primeiro contrato de
-  proposta do Hermes.
+- Fase: control plane v1, proposta do Hermes e primeiro baseline descritivo
+  determinístico em DuckDB.
 - VPS e Supabase: infraestrutura compartilhada; este laboratório usa apenas seu
   caminho, schema e credenciais lógicas exclusivos.
 - Parquets: entrada global comum, sempre montada como somente leitura; nenhum
@@ -55,7 +55,8 @@ O runtime observacional hermes-indicadores está ativo em
 /srv/labs/projects/lab-b/hermes, sem rede, holdout, Docker socket ou
 capacidade de execução; o painel acompanha seu heartbeat. O gerador de
 propostas é um serviço separado, sem rede, que produz apenas hipóteses
-versionadas para revisão humana.
+versionadas para revisão humana. A análise de dados roda no worker Docker
+isolado e grava relatórios dentro de `lab-b`.
 
 ## Documentos
 

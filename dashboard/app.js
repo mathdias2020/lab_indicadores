@@ -34,6 +34,12 @@ function makeResearchKey() {
   return `dashboard-research-${stamp}-${suffix}`;
 }
 
+function makeAnalysisKey() {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `dashboard-analysis-${stamp}-${suffix}`;
+}
+
 function setSessionView(session) {
   state.session = session;
   authPanel.hidden = Boolean(session);
@@ -193,8 +199,32 @@ function renderProposals(proposals) {
       <p class="proposal-summary"><strong>Pergunta</strong>${escapeHtml(proposal.question)}</p>
       <p class="proposal-hypothesis"><strong>Hipótese</strong>${escapeHtml(proposal.hypothesis)}</p>
       <div class="proposal-foot"><span><small>evidência</small><b>${escapeHtml(proposal.evidence_level || "not_tested")}</b></span><span><small>gates</small><b>${escapeHtml(gates)}</b></span><span><small>holdout</small><b>fechado</b></span><span><small>hash</small><b title="${escapeHtml(proposal.proposal_sha256 || "")}">${escapeHtml(shortHash(proposal.proposal_sha256))}</b></span></div>
+      <div class="proposal-card__actions"><button class="button button--quiet button--compact" type="button" data-analysis-proposal="${escapeHtml(proposal.proposal_key)}">Executar baseline descritiva <span aria-hidden="true">→</span></button></div>
     </article>`;
   }).join("");
+  grid.querySelectorAll("button[data-analysis-proposal]").forEach((button) => {
+    button.addEventListener("click", () => enqueueAnalysis(button.dataset.analysisProposal, button));
+  });
+}
+
+async function enqueueAnalysis(proposalKey, button) {
+  button.disabled = true;
+  setMessage(researchMessage, "Enfileirando análise determinística…");
+  const key = makeAnalysisKey();
+  const { data, error } = await supabase.rpc("dashboard_enqueue_analysis", {
+    p_idempotency_key: key,
+    p_proposal_key: proposalKey,
+    p_run_key: key,
+    p_requested_by: "dashboard",
+  });
+  if (error) {
+    setMessage(researchMessage, error.message, "error");
+    button.disabled = false;
+    return;
+  }
+  setMessage(researchMessage, data?.[0]?.existing ? "Essa análise já existe; a run original foi preservada." : "Análise determinística enfileirada.", "success");
+  setToast(data?.[0]?.existing ? "Idempotência preservada" : "Baseline enviada ao worker");
+  await loadDashboard();
 }
 
 function renderRuns() {
