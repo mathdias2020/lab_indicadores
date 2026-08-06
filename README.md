@@ -37,11 +37,16 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 
 ## Estado atual
 
-- Fase: fundação e contratos.
-- VPS e Supabase: infraestrutura compartilhada, sem alterações deste laboratório.
+- Fase: control plane v1 e preflight reproduzível.
+- VPS e Supabase: infraestrutura compartilhada; este laboratório usa apenas seu
+  caminho, schema e credenciais lógicas exclusivos.
 - Parquets: entrada global comum, sempre montada como somente leitura; nenhum
   laboratório escreve nela.
 - Código, DuckDBs, resultados, logs e artefatos: exclusivos de cada laboratório.
+- O schema `lab_indicadores` e seu contrato de fila já foram aplicados no
+  Supabase compartilhado. O painel ainda não foi implementado.
+- O orquestrador host-side está versionado, mas não foi iniciado até que uma
+  credencial server-side do banco seja provisionada com segurança na VPS.
 
 ## Documentos
 
@@ -50,4 +55,6 @@ Um indicador só pode avançar de uma camada para a seguinte depois de passar pe
 - [`INDICATOR_CONTRACT.md`](docs/INDICATOR_CONTRACT.md)
 - [`SHARED_INFRA_CONTRACT.md`](docs/SHARED_INFRA_CONTRACT.md)
 - [`CONTROL_PLANE.md`](docs/CONTROL_PLANE.md)
+- [`CONTROL_PLANE_V1.md`](docs/CONTROL_PLANE_V1.md)
+- [`ORCHESTRATOR.md`](docs/ORCHESTRATOR.md)
 - [`VPS_REGISTRATION.md`](docs/VPS_REGISTRATION.md)

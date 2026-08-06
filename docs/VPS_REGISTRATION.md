@@ -12,15 +12,17 @@ Status: `PREFLIGHT_SUCCEEDED` (nenhum container persistente)
 
 - Git: `https://github.com/mathdias2020/lab_indicadores`
 - branch de execucao: `main`
-- branch/commit local de referencia: `main` / `4ad9abb` antes deste registro
+- branch/commit local de referencia: `main` / verifique o commit publicado antes do deploy
 - observacao: o repositorio local tem o contrato; publicacao no GitHub depende da permissao de push da conta conectada
 
 ## 3. Supabase
 
 - projeto: `bpomihgzoiefjblewyun`
-- MCP: projeto Supabase compartilhado, usado por esta frente somente apos aprovacao de contrato
+- MCP: projeto Supabase compartilhado, usado por esta frente somente dentro do contrato desta pasta
 - schema reservado: `lab_indicadores`
-- estado: schema ainda nao criado; nenhuma migration, tabela, RLS ou job foi aplicado
+- estado: schema e control plane v1 aplicados; nenhum job persistente foi instalado na VPS
+- migrations: `control_plane_v1` e `control_plane_v1_owner_policies`
+- smoke control-plane: `control-plane-smoke-v1-20260806` concluido com sucesso
 - proibido: schema `lab_automatizado`, worker `lab-automatizado-vps-linux` e tabelas do outro laboratorio
 
 ## 4. VPS
@@ -39,6 +41,7 @@ Status: `PREFLIGHT_SUCCEEDED` (nenhum container persistente)
 - entrada: `python /app/src/lab_indicadores/worker.py`
 - primeiro comando permitido: `smoke`
 - estado atual: registrado e executado como container descartavel (`run --rm`)
+- orquestrador: implementado host-side, ainda nao iniciado; aguarda credencial server-side do banco
 
 ## 6. Dataset do preflight
 
