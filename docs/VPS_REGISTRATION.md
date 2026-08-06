@@ -1,6 +1,6 @@
 # Registro tecnico da VPS
 
-Status: `REGISTERED_READY_FOR_PREFLIGHT` (nenhum container iniciado)
+Status: `PREFLIGHT_SUCCEEDED` (nenhum container persistente)
 
 ## 1. Identidade
 
@@ -36,9 +36,9 @@ Status: `REGISTERED_READY_FOR_PREFLIGHT` (nenhum container iniciado)
 - projeto Compose: `lab_indicadores`
 - servico: `indicator-worker`
 - worker: `lab-indicadores-worker`
-- entrada: `python -m lab_indicadores.worker`
+- entrada: `python /app/src/lab_indicadores/worker.py`
 - primeiro comando permitido: `smoke`
-- estado atual: arquivo registrado localmente; nao implantado nem iniciado na VPS
+- estado atual: registrado e executado como container descartavel (`run --rm`)
 
 ## 6. Dataset do preflight
 
@@ -48,6 +48,16 @@ Status: `REGISTERED_READY_FOR_PREFLIGHT` (nenhum container iniciado)
 - 2025 e 2026: proibidos neste preflight
 - holdout: `holdout_accessed=false`
 - hashes e paths: registrados no manifesto versionado
+
+Resultado do preflight: executado duas vezes com o mesmo resultado. O relatorio
+esta em `/srv/labs/projects/lab-b/runs/indicator-lab-preflight-v1/preflight-report.json`
+e o hash SHA-256 observado foi:
+
+`49fd1b895ae3d72e88d1a4320d0f21a104c02b49030e994da477e5ddccd51100`
+
+O relatorio registra `holdout_accessed=false`, oito arquivos com modo `0444`
+e `worker_id=lab-indicadores-worker`. `docker ps -a` nao encontrou container
+persistente do projeto.
 
 ## 7. Limites
 

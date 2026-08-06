@@ -45,7 +45,7 @@ services:
         source: /srv/labs/projects/lab-b/work
         target: /app/work
     healthcheck:
-      test: ["CMD", "python", "-m", "lab_indicadores.worker", "healthcheck"]
+      test: ["CMD", "python", "/app/src/lab_indicadores/worker.py", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 2
