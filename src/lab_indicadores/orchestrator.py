@@ -81,8 +81,8 @@ def _event(conn: psycopg.Connection, run_id: str, event_type: str, message: str,
     conn.execute(
         """
         insert into lab_indicadores.events
-          (run_id, event_type, message, payload)
-        values (%s, %s, %s, %s::jsonb)
+          (run_id, event_type, message, payload, created_at)
+        values (%s, %s, %s, %s::jsonb, clock_timestamp())
         """,
         (run_id, event_type, message, json.dumps(payload, sort_keys=True)),
     )
@@ -103,7 +103,7 @@ def _register_worker(conn: psycopg.Connection, status: str, metadata: dict | Non
         """
         insert into lab_indicadores.workers
           (worker_id, status, capabilities, version, last_heartbeat_at, metadata)
-        values (%s, %s, %s::jsonb, %s, now(), %s::jsonb)
+        values (%s, %s, %s::jsonb, %s, clock_timestamp(), %s::jsonb)
         on conflict (worker_id) do update set
           status = excluded.status,
           capabilities = excluded.capabilities,
@@ -333,8 +333,8 @@ def _start_run(conn: psycopg.Connection, run_id: str, run_type: str = "preflight
         """
         update lab_indicadores.runs
         set status = 'running',
-            started_at = coalesce(started_at, now()),
-            heartbeat_at = now()
+            started_at = coalesce(started_at, clock_timestamp()),
+            heartbeat_at = clock_timestamp()
         where id = %s
         """,
         (run_id,),
@@ -379,11 +379,11 @@ def _succeed_run(conn: psycopg.Connection, run_id: str, command_id: str, result:
         ),
     )
     conn.execute(
-        "update lab_indicadores.runs set status='succeeded', heartbeat_at=now(), finished_at=now() where id=%s",
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=clock_timestamp(), finished_at=clock_timestamp() where id=%s",
         (run_id,),
     )
     conn.execute(
-        "update lab_indicadores.commands set status='completed', completed_at=now() where id=%s",
+        "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
         (command_id,),
     )
     conn.commit()
@@ -399,11 +399,11 @@ def _succeed_run(conn: psycopg.Connection, run_id: str, command_id: str, result:
 def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str) -> None:
     message = error[:4000]
     conn.execute(
-        "update lab_indicadores.runs set status='failed', error_message=%s, finished_at=now() where id=%s",
+        "update lab_indicadores.runs set status='failed', error_message=%s, finished_at=clock_timestamp() where id=%s",
         (message, run_id),
     )
     conn.execute(
-        "update lab_indicadores.commands set status='failed', error_message=%s, completed_at=now() where id=%s",
+        "update lab_indicadores.commands set status='failed', error_message=%s, completed_at=clock_timestamp() where id=%s",
         (message, command_id),
     )
     conn.commit()
@@ -461,6 +461,55 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
     return {"proposal": proposal}
 
 
+def _run_docker_job(
+    conn: psycopg.Connection,
+    command: list[str],
+    log_path: Path,
+    run_id: str,
+) -> int:
+    """Run a worker while keeping the dashboard heartbeat alive."""
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    last_heartbeat = started
+    heartbeat_interval = max(10.0, min(30.0, POLL_SECONDS * 10.0))
+    with log_path.open("ab") as log_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=LAB_ROOT,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            while True:
+                return_code = process.poll()
+                now = time.monotonic()
+                if return_code is not None:
+                    return return_code
+                if now - started >= JOB_TIMEOUT_SECONDS:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(command, JOB_TIMEOUT_SECONDS)
+                if now - last_heartbeat >= heartbeat_interval:
+                    try:
+                        _register_worker(
+                            conn,
+                            "busy",
+                            {
+                                "run_id": run_id,
+                                "elapsed_seconds": round(now - started, 1),
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - monitoring must not kill a healthy job.
+                        conn.rollback()
+                    last_heartbeat = now
+                time.sleep(min(1.0, max(0.25, POLL_SECONDS)))
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+
+
 def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, result: dict) -> None:
     proposal = result["proposal"]
     artifact_path = Path(proposal["path"]).resolve()
@@ -488,11 +537,11 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
         ),
     )
     conn.execute(
-        "update lab_indicadores.runs set status='succeeded', heartbeat_at=now(), finished_at=now() where id=%s",
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=clock_timestamp(), finished_at=clock_timestamp() where id=%s",
         (run_id,),
     )
     conn.execute(
-        "update lab_indicadores.commands set status='completed', completed_at=now() where id=%s",
+        "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
         (command_id,),
     )
     conn.commit()
@@ -583,17 +632,9 @@ def _execute_analysis(conn: psycopg.Connection, run_id: str, payload: dict) -> d
         "analysis",
         f"/app/work/analysis/inbox/{run_id}.json",
     ]
-    with log_path.open("ab") as log_handle:
-        completed = subprocess.run(
-            command,
-            cwd=LAB_ROOT,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            check=False,
-            timeout=JOB_TIMEOUT_SECONDS,
-        )
-    if completed.returncode != 0:
-        raise RuntimeError(f"analysis job exited with code {completed.returncode}; log={log_path}")
+    return_code = _run_docker_job(conn, command, log_path, run_id)
+    if return_code != 0:
+        raise RuntimeError(f"analysis job exited with code {return_code}; log={log_path}")
     report_path = LAB_ROOT / "runs" / run_id / "analysis-report.json"
     if not report_path.is_file():
         raise FileNotFoundError(report_path)
@@ -650,11 +691,11 @@ def _succeed_analysis(conn: psycopg.Connection, run_id: str, command_id: str, re
         ),
     )
     conn.execute(
-        "update lab_indicadores.runs set status='succeeded', heartbeat_at=now(), finished_at=now() where id=%s",
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=clock_timestamp(), finished_at=clock_timestamp() where id=%s",
         (run_id,),
     )
     conn.execute(
-        "update lab_indicadores.commands set status='completed', completed_at=now() where id=%s",
+        "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
         (command_id,),
     )
     conn.commit()
