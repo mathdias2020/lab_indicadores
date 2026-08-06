@@ -523,7 +523,7 @@ def _execute_analysis(conn: psycopg.Connection, run_id: str, payload: dict) -> d
     job_path = ANALYSIS_INBOX_PATH / f"{run_id}.json"
     job = {
         "kind": "indicator_analysis_job_v1",
-        "project_id": PROJECT_NAME,
+        "project_id": "lab-indicadores",
         "run_id": run_id,
         "analysis_id": context["analysis_id"],
         "proposal_key": proposal_key,
