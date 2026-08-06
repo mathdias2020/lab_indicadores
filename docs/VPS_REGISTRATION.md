@@ -28,7 +28,7 @@ Status: `PREFLIGHT_SUCCEEDED` (nenhum container persistente)
 ## 4. VPS
 
 - caminho exclusivo: `/srv/labs/projects/lab-b`
-- painel MVP: `/srv/labs/projects/lab-b/dashboard` (artefato estático; não publicado)
+- painel MVP: `/srv/labs/projects/lab-b/dashboard` (artefato estático; publicado na Vercel)
 - datasets de entrada: `/srv/labs/datasets`
 - montagem de dados: somente leitura
 - diretorios de escrita: `runs/`, `logs/` e `work/`

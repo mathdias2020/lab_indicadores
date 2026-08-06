@@ -23,3 +23,11 @@ publishable do projeto Supabase.
 O acesso depende de uma conta Supabase Auth. O botão de criação de acesso existe
 para o primeiro usuário do laboratório; em produção, a política de cadastro deve
 ser substituída por convite ou allowlist.
+
+## Produção
+
+- URL: <https://lab-indicadores.vercel.app>
+- Projeto Vercel: `lab-indicadores`
+- O deploy contém somente os cinco arquivos estáticos deste diretório.
+- A VPS continua responsável pelo worker e pelo orquestrador; nenhuma porta da
+  VPS é usada pelo painel.
