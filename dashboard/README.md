@@ -26,7 +26,7 @@ ser substituída por convite ou allowlist.
 
 ## Produção
 
-- URL: <https://lab-indicadores.vercel.app>
+- URL: <https://lab-indicadores-kappa.vercel.app>
 - Projeto Vercel: `lab-indicadores`
 - O deploy contém somente os cinco arquivos estáticos deste diretório.
 - A VPS continua responsável pelo worker e pelo orquestrador; nenhuma porta da
