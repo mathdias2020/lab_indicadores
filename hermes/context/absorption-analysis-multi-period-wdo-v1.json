@@ -1,0 +1,51 @@
+{
+  "context_version": "indicator-analysis-context-v1",
+  "context_id": "absorption-descriptive-multi-period-wdo-v1",
+  "analysis_id": "absorption-descriptive-multi-period-wdo-v1",
+  "dataset_manifest": "hermes-analysis-absorption-multi-period-wdo-v1",
+  "asset": "WDO",
+  "track": "flow_price",
+  "horizon": "tactical_intraday",
+  "evidence_target": "descriptive",
+  "sample_design": "three preregistered January slices; thresholds pooled within this declared sample",
+  "eligible_period": {
+    "discovery_slices": ["2016-01", "2020-01"],
+    "development_validation_slices": ["2024-01"],
+    "holdout": "2025-2026"
+  },
+  "files": [
+    {
+      "asset": "WDO",
+      "period": "2016-01",
+      "path": "expanded_sample_v1/raw/wdofut/2016-01.parquet",
+      "bytes": 20097276,
+      "sha256": "1ea4eeae7b2383379cf3c3c855025d762a4d21f53bd3f3852f8da25e5509c160"
+    },
+    {
+      "asset": "WDO",
+      "period": "2020-01",
+      "path": "expanded_sample_v1/raw/wdofut/2020-01.parquet",
+      "bytes": 62858651,
+      "sha256": "3ad8ab19851ccb4e36531a2102c9757ced55eb76e7aabd896a920f33f461c467"
+    },
+    {
+      "asset": "WDO",
+      "period": "2024-01",
+      "path": "expanded_sample_v1/raw/wdofut/2024-01.parquet",
+      "bytes": 109404767,
+      "sha256": "ffbcb23ef86ef4a08e4f46a81c4cb409f6697b7e0d0d0a79fb7d5cd5301f19ce"
+    }
+  ],
+  "parameters": {
+    "window_seconds": 60,
+    "min_trade_count": 10,
+    "aggression_quantile": 0.95,
+    "displacement_quantile": 0.35,
+    "player_concentration_hhi_min": 0.20,
+    "level_persistence_min": 0.50
+  },
+  "separate_components": ["aggression", "passive", "auction", "rlp", "direct_trades"],
+  "gates": ["descriptive", "explanatory", "predictive", "operational"],
+  "holdout_accessed": false,
+  "review_required": true
+}

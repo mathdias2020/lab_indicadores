@@ -37,12 +37,28 @@ HERMES_CAPABILITIES = ["read_development_data", "proposal_generation"]
 HERMES_ALLOWED_STATUSES = {"observing", "proposing", "degraded", "error"}
 HERMES_ALLOWED_MODES = {"observation", "proposal", "research", "review"}
 HERMES_CONTEXT_MANIFEST = "hermes-context-absorption-v1"
-HERMES_CONTEXT_PATH = LAB_ROOT / "hermes" / "context" / "absorption-research-v1.json"
+HERMES_CONTEXTS = {
+    "absorption-baseline-v1": LAB_ROOT / "hermes" / "context" / "absorption-research-v1.json",
+    "absorption-baseline-win-v1": LAB_ROOT / "hermes" / "context" / "absorption-research-win-v1.json",
+}
 HERMES_INBOX_PATH = LAB_ROOT / "hermes" / "inbox"
 HERMES_PROPOSAL_ROOT = LAB_ROOT / "hermes" / "outbox" / "proposals"
 HERMES_ENGINE_SERVICE = "lab-indicadores-hermes-engine.service"
-ANALYSIS_MANIFEST = "hermes-analysis-absorption-v1"
-ANALYSIS_CONTEXT_PATH = LAB_ROOT / "hermes" / "context" / "absorption-analysis-v1.json"
+ANALYSIS_CONTEXTS = {
+    "absorption-descriptive-baseline-v1": {
+        "path": LAB_ROOT / "hermes" / "context" / "absorption-analysis-v1.json",
+        "manifest": "hermes-analysis-absorption-v1",
+    },
+    "absorption-descriptive-multi-period-wdo-v1": {
+        "path": LAB_ROOT / "hermes" / "context" / "absorption-analysis-multi-period-wdo-v1.json",
+        "manifest": "hermes-analysis-absorption-multi-period-wdo-v1",
+    },
+    "absorption-descriptive-multi-period-win-v1": {
+        "path": LAB_ROOT / "hermes" / "context" / "absorption-analysis-multi-period-win-v1.json",
+        "manifest": "hermes-analysis-absorption-multi-period-win-v1",
+    },
+}
+ANALYSIS_MANIFESTS = {item["manifest"] for item in ANALYSIS_CONTEXTS.values()}
 ANALYSIS_INBOX_PATH = LAB_ROOT / "work" / "analysis" / "inbox"
 
 
@@ -394,9 +410,13 @@ def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str
     _event(conn, run_id, "run_failed", "Run failed", {"error": message})
 
 
-def _execute_research(conn: psycopg.Connection, run_id: str) -> dict:
-    if not HERMES_CONTEXT_PATH.is_file():
-        raise FileNotFoundError(HERMES_CONTEXT_PATH)
+def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
+    context_id = str(payload.get("context_id") or "absorption-baseline-v1")
+    context_path = HERMES_CONTEXTS.get(context_id)
+    if not context_path:
+        raise ValueError(f"unsupported Hermes research context: {context_id}")
+    if not context_path.is_file():
+        raise FileNotFoundError(context_path)
 
     if not conn.execute(
         "select 1 from lab_indicadores.runs where id=%s",
@@ -413,7 +433,8 @@ def _execute_research(conn: psycopg.Connection, run_id: str) -> dict:
         "run_id": run_id,
         "proposal_key": proposal_key,
         "dataset_manifest": HERMES_CONTEXT_MANIFEST,
-        "context_path": str(HERMES_CONTEXT_PATH),
+        "context_id": context_id,
+        "context_path": str(context_path),
         "execution_profile": "fixture_proposal",
     }
     temporary_path = job_path.with_suffix(".tmp")
@@ -489,13 +510,20 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
 
 
 def _execute_analysis(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
-    if not ANALYSIS_CONTEXT_PATH.is_file():
-        raise FileNotFoundError(ANALYSIS_CONTEXT_PATH)
-    context = json.loads(ANALYSIS_CONTEXT_PATH.read_text(encoding="utf-8"))
-    if context.get("context_id") != "absorption-descriptive-baseline-v1":
-        raise ValueError("unsupported analysis context")
-    if context.get("dataset_manifest") != ANALYSIS_MANIFEST:
+    context_id = str(payload.get("analysis_context_id") or "absorption-descriptive-baseline-v1")
+    context_spec = ANALYSIS_CONTEXTS.get(context_id)
+    if not context_spec:
+        raise ValueError(f"unsupported analysis context: {context_id}")
+    context_path = context_spec["path"]
+    if not context_path.is_file():
+        raise FileNotFoundError(context_path)
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    if context.get("context_id") != context_id:
+        raise ValueError("analysis context id mismatch")
+    if context.get("dataset_manifest") != context_spec["manifest"]:
         raise ValueError("analysis context manifest mismatch")
+    if payload.get("dataset_manifest") not in {None, context_spec["manifest"]}:
+        raise ValueError("analysis payload manifest does not match context")
     if context.get("holdout_accessed") is not False:
         raise ValueError("analysis context opened the holdout")
 
@@ -527,7 +555,8 @@ def _execute_analysis(conn: psycopg.Connection, run_id: str, payload: dict) -> d
         "run_id": run_id,
         "analysis_id": context["analysis_id"],
         "proposal_key": proposal_key,
-        "dataset_manifest": ANALYSIS_MANIFEST,
+        "dataset_manifest": context_spec["manifest"],
+        "analysis_context_id": context_id,
         "asset": context["asset"],
         "track": context["track"],
         "horizon": context["horizon"],
@@ -604,8 +633,14 @@ def _succeed_analysis(conn: psycopg.Connection, run_id: str, command_id: str, re
             json.dumps(
                 {
                     "analysis_id": payload.get("analysis_id"),
+                    "analysis_context_id": payload.get("analysis_id"),
                     "proposal_key": payload.get("proposal_key"),
                     "evidence_level": payload.get("evidence_level"),
+                    "asset": payload.get("asset"),
+                    "raw_rows": payload.get("coverage", {}).get("raw_rows"),
+                    "valid_rows": payload.get("coverage", {}).get("valid_rows"),
+                    "windows": payload.get("coverage", {}).get("windows", {}).get("windows"),
+                    "periods": payload.get("coverage", {}).get("periods", []),
                     "candidate_windows_returned": payload.get("coverage", {}).get("candidate_windows_returned"),
                     "artifact_sha256": artifact_hash,
                     "holdout_accessed": False,
@@ -680,7 +715,7 @@ def process_one(conn: psycopg.Connection) -> bool:
     if command_type == "start_research" and manifest != HERMES_CONTEXT_MANIFEST:
         _fail_run(conn, run_id, command_id, f"research manifest not allowed: {manifest}")
         return True
-    if command_type == "start_analysis" and manifest != ANALYSIS_MANIFEST:
+    if command_type == "start_analysis" and manifest not in ANALYSIS_MANIFESTS:
         _fail_run(conn, run_id, command_id, f"analysis manifest not allowed: {manifest}")
         return True
 
@@ -688,7 +723,7 @@ def process_one(conn: psycopg.Connection) -> bool:
     try:
         if command_type == "start_research":
             _start_run(conn, run_id, "research")
-            result = _execute_research(conn, run_id)
+            result = _execute_research(conn, run_id, command["payload"] or {})
             _succeed_research(conn, run_id, command_id, result)
         elif command_type == "start_analysis":
             _start_run(conn, run_id, "analysis")

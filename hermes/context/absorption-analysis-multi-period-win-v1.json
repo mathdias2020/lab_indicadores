@@ -1,0 +1,51 @@
+{
+  "context_version": "indicator-analysis-context-v1",
+  "context_id": "absorption-descriptive-multi-period-win-v1",
+  "analysis_id": "absorption-descriptive-multi-period-win-v1",
+  "dataset_manifest": "hermes-analysis-absorption-multi-period-win-v1",
+  "asset": "WIN",
+  "track": "flow_price",
+  "horizon": "tactical_intraday",
+  "evidence_target": "descriptive",
+  "sample_design": "three preregistered January slices; thresholds pooled within this declared sample",
+  "eligible_period": {
+    "discovery_slices": ["2016-01", "2020-01"],
+    "development_validation_slices": ["2024-01"],
+    "holdout": "2025-2026"
+  },
+  "files": [
+    {
+      "asset": "WIN",
+      "period": "2016-01",
+      "path": "expanded_sample_v1/raw/winfut/2016-01.parquet",
+      "bytes": 22683415,
+      "sha256": "6221444a92063102733449db36dd2e8653fe3e4a3cb2d580bd0a59b5a93b213b"
+    },
+    {
+      "asset": "WIN",
+      "period": "2020-01",
+      "path": "expanded_sample_v1/raw/winfut/2020-01.parquet",
+      "bytes": 407362048,
+      "sha256": "db96ae5820311a16f2865b05b788a6e4e06e99951557fa0a78574d7122e5960b"
+    },
+    {
+      "asset": "WIN",
+      "period": "2024-01",
+      "path": "expanded_sample_v1/raw/winfut/2024-01.parquet",
+      "bytes": 697777962,
+      "sha256": "eeaaee8fa6c3d3a1d20404f045d7d967b283b50fc729846bdfaf247819b91ea9"
+    }
+  ],
+  "parameters": {
+    "window_seconds": 60,
+    "min_trade_count": 10,
+    "aggression_quantile": 0.95,
+    "displacement_quantile": 0.35,
+    "player_concentration_hhi_min": 0.20,
+    "level_persistence_min": 0.50
+  },
+  "separate_components": ["aggression", "passive", "auction", "rlp", "direct_trades"],
+  "gates": ["descriptive", "explanatory", "predictive", "operational"],
+  "holdout_accessed": false,
+  "review_required": true
+}

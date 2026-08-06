@@ -21,7 +21,21 @@ RUNS_ROOT = Path("/app/runs")
 LOGS_ROOT = Path("/app/logs")
 WORK_ROOT = Path("/app/work")
 WORKER_ID = os.environ.get("WORKER_ID", "lab-indicadores-worker")
-ANALYSIS_MANIFEST = "hermes-analysis-absorption-v1"
+ANALYSIS_SPECS = {
+    "absorption-descriptive-baseline-v1": {
+        "dataset_manifest": "hermes-analysis-absorption-v1",
+        "sample_design": "single preregistered January slice",
+    },
+    "absorption-descriptive-multi-period-wdo-v1": {
+        "dataset_manifest": "hermes-analysis-absorption-multi-period-wdo-v1",
+        "sample_design": "three preregistered January slices",
+    },
+    "absorption-descriptive-multi-period-win-v1": {
+        "dataset_manifest": "hermes-analysis-absorption-multi-period-win-v1",
+        "sample_design": "three preregistered January slices",
+    },
+}
+ANALYSIS_MANIFESTS = {item["dataset_manifest"] for item in ANALYSIS_SPECS.values()}
 ANALYSIS_ROOT = WORK_ROOT / "analysis"
 
 
@@ -57,12 +71,14 @@ def _validate_analysis_job(job: dict) -> list[dict]:
         raise ValueError("unsupported analysis job kind")
     if job.get("project_id") != "lab-indicadores":
         raise ValueError("analysis job project_id does not belong to this laboratory")
-    if job.get("dataset_manifest") != ANALYSIS_MANIFEST:
-        raise ValueError("analysis manifest is not allowed")
     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", str(job.get("run_id", ""))):
         raise ValueError("analysis run_id must be a UUID")
-    if job.get("analysis_id") != "absorption-descriptive-baseline-v1":
+    analysis_id = job.get("analysis_id")
+    spec = ANALYSIS_SPECS.get(analysis_id)
+    if not spec:
         raise ValueError("analysis id is not allowed")
+    if job.get("dataset_manifest") != spec["dataset_manifest"]:
+        raise ValueError("analysis manifest does not match analysis id")
     if job.get("holdout_accessed") is not False:
         raise ValueError("analysis job must declare holdout_accessed=false")
     if job.get("asset") not in {"WDO", "WIN"}:
@@ -71,6 +87,8 @@ def _validate_analysis_job(job: dict) -> list[dict]:
     root = CANONICAL_ROOT.resolve()
     checked: list[dict] = []
     for item in job.get("files", []):
+        if item.get("asset") != job.get("asset"):
+            raise ValueError("analysis file asset does not match job asset")
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts:
             raise ValueError(f"unsafe analysis dataset path: {relative}")
@@ -128,7 +146,7 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
         raise ValueError("quantile parameters must be between zero and one")
 
     source_paths = [str(Path("/data/canonical") / item["path"]) for item in checked]
-    source_sql = "read_parquet([" + ",".join(_sql_quote(path) for path in source_paths) + "], union_by_name=true)"
+    source_sql = "read_parquet([" + ",".join(_sql_quote(path) for path in source_paths) + "], union_by_name=true, filename=true)"
     conn = duckdb.connect(database=":memory:")
     conn.execute("PRAGMA threads=1")
     conn.execute("PRAGMA memory_limit='1400MB'")
@@ -138,6 +156,8 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
             f"""
             create temp table raw_trades as
             select
+              regexp_extract(filename, '([0-9]{{4}}-[0-9]{{2}})', 1) as period_id,
+              filename as source_file,
               try_cast(date as date) as session_date,
               try_cast(concat(cast(date as varchar), ' ', time) as timestamp) as event_ts,
               try_cast(trade_number as bigint) as trade_number,
@@ -174,6 +194,7 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
             """
             create temp table minute_windows as
             select
+              period_id,
               date_trunc('minute', event_ts) as window_start,
               min(session_date) as session_date,
               first(price order by event_ts, trade_number) as price_open,
@@ -189,44 +210,44 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
               sum(case when trade_type = 'Auction' then qty else 0 end) as auction_qty,
               sum(case when trade_type = 'CrossTrade' then qty else 0 end) as cross_trade_qty
             from valid_trades
-            group by 1
+            group by 1, 2
             """
         )
         conn.execute(
             """
             create temp table player_concentration as
             with by_player as (
-              select date_trunc('minute', event_ts) as window_start,
+              select period_id, date_trunc('minute', event_ts) as window_start,
                      aggressor_agent,
                      sum(qty) as player_qty
               from valid_trades
               where aggression_sign <> 0
-              group by 1, 2
+              group by 1, 2, 3
             ), totals as (
-              select *, sum(player_qty) over (partition by window_start) as total_qty
+              select *, sum(player_qty) over (partition by period_id, window_start) as total_qty
               from by_player
             )
-            select window_start,
+            select period_id, window_start,
                    sum(power(player_qty / nullif(total_qty, 0), 2)) as player_concentration_hhi
             from totals
-            group by 1
+            group by 1, 2
             """
         )
         conn.execute(
             """
             create temp table level_persistence as
             with by_level as (
-              select date_trunc('minute', event_ts) as window_start,
+              select period_id, date_trunc('minute', event_ts) as window_start,
                      price,
                      sum(qty) as level_qty
               from valid_trades
               where aggression_sign <> 0
-              group by 1, 2
+              group by 1, 2, 3
             )
-            select window_start,
+            select period_id, window_start,
                    max(level_qty) / nullif(sum(level_qty), 0) as level_persistence_share
             from by_level
-            group by 1
+            group by 1, 2
             """
         )
         conn.execute(
@@ -240,8 +261,8 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
               coalesce(pc.player_concentration_hhi, 0) as player_concentration_hhi,
               coalesce(lp.level_persistence_share, 0) as level_persistence_share
             from minute_windows w
-            left join player_concentration pc using (window_start)
-            left join level_persistence lp using (window_start)
+            left join player_concentration pc using (period_id, window_start)
+            left join level_persistence lp using (period_id, window_start)
             """
         )
         thresholds = conn.execute(
@@ -259,6 +280,7 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
         candidates_cursor = conn.execute(
             """
             select
+              period_id,
               session_date,
               window_start,
               price_open,
@@ -317,6 +339,35 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
                 metric_summary[key] = value.isoformat()
 
         type_rows = _rows_as_dicts(conn.execute("select trade_type, count(*) as rows from raw_trades group by 1 order by rows desc"))
+        period_rows = _rows_as_dicts(
+            conn.execute(
+                """
+                select
+                  period_id,
+                  count(*) as windows,
+                  min(window_start) as first_window,
+                  max(window_start) as last_window,
+                  count(*) filter (where aggression_abs_qty > 0) as aggression_windows,
+                  avg(aggression_abs_qty) filter (where aggression_abs_qty > 0) as mean_aggression_abs_qty,
+                  avg(price_displacement) as mean_price_displacement,
+                  count(*) filter (
+                    where trade_count >= ?
+                      and aggression_abs_qty >= ?
+                      and price_displacement <= ?
+                      and player_concentration_hhi >= ?
+                      and level_persistence_share >= ?
+                  ) as candidate_windows
+                from metrics
+                group by 1
+                order by 1
+                """,
+                [min_trade_count, aggression_threshold, displacement_threshold, hhi_min, persistence_min],
+            )
+        )
+        for period in period_rows:
+            for key, value in period.items():
+                if hasattr(value, "isoformat"):
+                    period[key] = value.isoformat()
         payload = {
             "kind": "indicator_analysis_report_v1",
             "project_id": "lab-indicadores",
@@ -350,6 +401,7 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
                 "invalid_rows": raw_rows - valid_rows,
                 "trade_types": type_rows,
                 "windows": metric_summary,
+                "periods": period_rows,
                 "candidate_windows_returned": len(candidates),
                 "passive_net": None,
                 "rlp": None,
@@ -360,6 +412,7 @@ def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
                 "descriptive event detection only; no future label was computed",
                 "passive order book, RLP and direct-trade semantics are not present in this raw contract",
                 "thresholds are distributional within the declared analysis scope and are not an out-of-sample claim",
+                "period slices are representative monthly samples, not a full-year census",
                 "no automatic indicator promotion or profit claim",
             ],
             "holdout_accessed": False,

@@ -28,10 +28,10 @@ function makeRunKey() {
   return `dashboard-preflight-${stamp}`;
 }
 
-function makeResearchKey() {
+function makeResearchKey(asset = "WDO") {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = Math.random().toString(36).slice(2, 8);
-  return `dashboard-research-${stamp}-${suffix}`;
+  return `dashboard-research-${asset.toLowerCase()}-${stamp}-${suffix}`;
 }
 
 function makeAnalysisKey() {
@@ -190,6 +190,12 @@ function renderProposals(proposals) {
   grid.innerHTML = proposals.map((proposal) => {
     const plan = proposal.validation_plan || {};
     const gates = Array.isArray(plan.gates) ? plan.gates.join(" / ") : "protocolo registrado";
+    const analysisContext = proposal.asset === "WIN"
+      ? "absorption-descriptive-multi-period-win-v1"
+      : "absorption-descriptive-multi-period-wdo-v1";
+    const analysisAction = ["in_review", "accepted"].includes(proposal.status)
+      ? `<div class="proposal-card__actions"><button class="button button--quiet button--compact" type="button" data-analysis-proposal="${escapeHtml(proposal.proposal_key)}" data-analysis-context="${analysisContext}">Executar amostra multi-período <span aria-hidden="true">→</span></button></div>`
+      : "";
     return `<article class="proposal-card">
       <div class="proposal-card__top">
         <div><p class="eyebrow">${escapeHtml(proposal.proposal_key)}</p><h3>${escapeHtml(proposal.title)}</h3></div>
@@ -199,21 +205,22 @@ function renderProposals(proposals) {
       <p class="proposal-summary"><strong>Pergunta</strong>${escapeHtml(proposal.question)}</p>
       <p class="proposal-hypothesis"><strong>Hipótese</strong>${escapeHtml(proposal.hypothesis)}</p>
       <div class="proposal-foot"><span><small>evidência</small><b>${escapeHtml(proposal.evidence_level || "not_tested")}</b></span><span><small>gates</small><b>${escapeHtml(gates)}</b></span><span><small>holdout</small><b>fechado</b></span><span><small>hash</small><b title="${escapeHtml(proposal.proposal_sha256 || "")}">${escapeHtml(shortHash(proposal.proposal_sha256))}</b></span></div>
-      <div class="proposal-card__actions"><button class="button button--quiet button--compact" type="button" data-analysis-proposal="${escapeHtml(proposal.proposal_key)}">Executar baseline descritiva <span aria-hidden="true">→</span></button></div>
+      ${analysisAction}
     </article>`;
   }).join("");
   grid.querySelectorAll("button[data-analysis-proposal]").forEach((button) => {
-    button.addEventListener("click", () => enqueueAnalysis(button.dataset.analysisProposal, button));
+    button.addEventListener("click", () => enqueueAnalysis(button.dataset.analysisProposal, button.dataset.analysisContext, button));
   });
 }
 
-async function enqueueAnalysis(proposalKey, button) {
+async function enqueueAnalysis(proposalKey, analysisContext, button) {
   button.disabled = true;
   setMessage(researchMessage, "Enfileirando análise determinística…");
   const key = makeAnalysisKey();
-  const { data, error } = await supabase.rpc("dashboard_enqueue_analysis", {
+  const { data, error } = await supabase.rpc("dashboard_enqueue_analysis_context", {
     p_idempotency_key: key,
     p_proposal_key: proposalKey,
+    p_analysis_context_id: analysisContext,
     p_run_key: key,
     p_requested_by: "dashboard",
   });
@@ -225,6 +232,7 @@ async function enqueueAnalysis(proposalKey, button) {
   setMessage(researchMessage, data?.[0]?.existing ? "Essa análise já existe; a run original foi preservada." : "Análise determinística enfileirada.", "success");
   setToast(data?.[0]?.existing ? "Idempotência preservada" : "Baseline enviada ao worker");
   await loadDashboard();
+  button.disabled = false;
 }
 
 function renderRuns() {
@@ -281,7 +289,13 @@ async function loadRunDetail(runId, scroll = true) {
   const events = eventsResult.data || [];
   const artifacts = artifactsResult.data || [];
   $("#event-list").innerHTML = events.length ? events.map((event) => `<div class="event-row"><time class="event-time">${formatDate(event.created_at)}</time><div class="event-copy"><strong>${escapeHtml(event.event_type)}</strong><span>${escapeHtml(event.message)}</span></div></div>`).join("") : '<p class="detail-empty">Nenhum evento visível.</p>';
-  $("#artifact-list").innerHTML = artifacts.length ? artifacts.map((artifact) => `<div class="artifact-row"><strong>${escapeHtml(artifact.artifact_type)}</strong><span title="${escapeHtml(artifact.sha256 || "")}">${escapeHtml(artifact.sha256 || "sem hash")}</span></div>`).join("") : '<p class="detail-empty">Nenhum artefato registrado.</p>';
+  $("#artifact-list").innerHTML = artifacts.length ? artifacts.map((artifact) => {
+    const metadata = artifact.metadata || {};
+    const summary = artifact.artifact_type === "indicator_analysis_report"
+      ? `${metadata.asset || "ativo"} · ${metadata.windows || 0} janelas · ${metadata.candidate_windows_returned || 0} candidatos · ${metadata.periods?.length || 0} períodos`
+      : "hash de integridade";
+    return `<div class="artifact-row"><strong>${escapeHtml(artifact.artifact_type)}</strong><span>${escapeHtml(summary)}</span><span title="${escapeHtml(artifact.sha256 || "")}">${escapeHtml(shortHash(artifact.sha256) || "sem hash")}</span></div>`;
+  }).join("") : '<p class="detail-empty">Nenhum artefato registrado.</p>';
   if (scroll) $("#detail-section").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -329,15 +343,15 @@ $("#run-form").addEventListener("submit", async (event) => {
   await loadDashboard();
 });
 
-$("#research-button").addEventListener("click", async () => {
-  const button = $("#research-button");
+async function enqueueResearch(asset, button) {
   button.disabled = true;
-  setMessage(researchMessage, "Gerando comando de pesquisa…");
-  const key = makeResearchKey();
+  setMessage(researchMessage, `Gerando hipótese ${asset}…`);
+  const key = makeResearchKey(asset);
   const { data, error } = await supabase.rpc("dashboard_enqueue_research", {
     p_idempotency_key: key,
     p_run_key: key,
     p_requested_by: "dashboard",
+    p_config: { context_id: asset === "WIN" ? "absorption-baseline-win-v1" : "absorption-baseline-v1" },
   });
   if (error) {
     setMessage(researchMessage, error.message, "error");
@@ -348,6 +362,10 @@ $("#research-button").addEventListener("click", async () => {
   setToast(data?.[0]?.existing ? "Idempotência preservada" : "Pesquisa enviada ao Hermes");
   await loadDashboard();
   button.disabled = false;
+}
+
+document.querySelectorAll("button[data-research-asset]").forEach((button) => {
+  button.addEventListener("click", () => enqueueResearch(button.dataset.researchAsset, button));
 });
 
 window.addEventListener("keydown", (event) => { if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && document.activeElement.tagName !== "INPUT") loadDashboard(); });
