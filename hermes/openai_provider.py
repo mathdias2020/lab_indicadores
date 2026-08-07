@@ -269,7 +269,10 @@ def generate_openai_proposal(
         "instructions": instructions,
         "input": _canonical_json(user_payload),
         "reasoning": {"effort": reasoning_effort, "context": "current_turn"},
-        "max_output_tokens": 3000,
+        # Reasoning tokens count toward this Responses API limit. Keep the
+        # user's selected xhigh effort while leaving room for the strict JSON
+        # proposal payload to finish.
+        "max_output_tokens": 8000,
         "safety_identifier": _safety_identifier(str(job.get("agent_id", "hermes-indicadores"))),
         "metadata": {
             "agent_id": str(job.get("agent_id", "hermes-indicadores")),
