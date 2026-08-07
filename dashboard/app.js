@@ -3,7 +3,7 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const config = window.__LAB_CONFIG__ || {};
 const supabase = createClient(config.supabaseUrl, config.supabasePublishableKey);
 const $ = (selector) => document.querySelector(selector);
-const state = { session: null, runs: [], agents: [], proposals: [], campaigns: [], selectedRun: null, timer: null };
+const state = { session: null, runs: [], agents: [], proposals: [], campaigns: [], aiSettings: null, selectedRun: null, timer: null };
 
 const authPanel = $("#auth-panel");
 const dashboard = $("#dashboard");
@@ -83,27 +83,31 @@ async function loadDashboard() {
   const refreshState = $("#refresh-state");
   refreshState.classList.add("is-syncing");
   try {
-    const [runsResult, workersResult, agentsResult, proposalsResult, campaignsResult] = await Promise.all([
+    const [runsResult, workersResult, agentsResult, proposalsResult, campaignsResult, aiSettingsResult] = await Promise.all([
       supabase.rpc("dashboard_list_runs", { p_limit: 30 }),
       supabase.rpc("dashboard_list_workers"),
       supabase.rpc("dashboard_list_agents"),
       supabase.rpc("dashboard_list_proposals", { p_limit: 30 }),
       supabase.rpc("dashboard_list_campaigns", { p_limit: 20 }),
+      supabase.rpc("dashboard_get_ai_settings"),
     ]);
     if (runsResult.error) throw runsResult.error;
     if (workersResult.error) throw workersResult.error;
     if (agentsResult.error) throw agentsResult.error;
     if (proposalsResult.error) throw proposalsResult.error;
     if (campaignsResult.error) throw campaignsResult.error;
+    if (aiSettingsResult.error) throw aiSettingsResult.error;
     state.runs = runsResult.data || [];
     state.agents = agentsResult.data || [];
     state.proposals = proposalsResult.data || [];
     state.campaigns = campaignsResult.data || [];
+    state.aiSettings = aiSettingsResult.data?.[0] || null;
     renderRuns();
     renderWorkers(workersResult.data || []);
     renderAgents(state.agents);
     renderProposals(state.proposals);
     renderCampaigns(state.campaigns);
+    renderAiSettings(state.aiSettings);
     renderPulse();
     if (state.selectedRun) await loadRunDetail(state.selectedRun.run_id, false);
     refreshState.innerHTML = '<span class="status-dot status-dot--live"></span>Atualizado agora';
@@ -211,6 +215,39 @@ function renderCampaigns(campaigns) {
         <span><small>holdout</small><b>fechado</b></span>
       </div>
     </article>`).join("");
+}
+
+function renderAiSettings(settings) {
+  if (!settings) {
+    $("#ai-settings-state").textContent = "indisponível";
+    return;
+  }
+  $("#ai-settings-state").textContent = `${settings.provider} · ${settings.model}`;
+  $("#ai-provider").value = settings.provider;
+  $("#ai-model").value = settings.model;
+  $("#ai-reasoning").value = settings.reasoning_effort;
+}
+
+async function saveAiSettings(event) {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  setMessage($("#ai-settings-message"), "Salvando configuração…");
+  const { data, error } = await supabase.rpc("dashboard_update_ai_settings", {
+    p_provider: $("#ai-provider").value,
+    p_model: $("#ai-model").value,
+    p_reasoning_effort: $("#ai-reasoning").value,
+  });
+  if (error) {
+    setMessage($("#ai-settings-message"), error.message, "error");
+    button.disabled = false;
+    return;
+  }
+  state.aiSettings = data?.[0] || state.aiSettings;
+  renderAiSettings(state.aiSettings);
+  setMessage($("#ai-settings-message"), "Configuração salva. Ela valerá no próximo ciclo Hermes.", "success");
+  setToast("Modelo do Hermes atualizado");
+  button.disabled = false;
 }
 
 function proposalStatusLabel(status) {
@@ -398,6 +435,7 @@ $("#run-form").addEventListener("submit", async (event) => {
   setToast(data?.[0]?.existing ? "Idempotência preservada" : "Comando enviado ao worker");
   await loadDashboard();
 });
+$("#ai-settings-form").addEventListener("submit", saveAiSettings);
 
 async function enqueueCampaign(asset, button) {
   button.disabled = true;

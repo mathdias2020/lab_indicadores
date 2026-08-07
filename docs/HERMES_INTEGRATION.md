@@ -66,9 +66,27 @@ O resultado é `descriptive` e não calcula retorno futuro.
 7. O usuário pode acionar a baseline descritiva; o worker grava um relatório
    hashado e o dashboard acompanha a run de análise.
 
-O mesmo contrato poderá receber um provider analítico posteriormente, mas o
-provider LLM não é ativado nesta fase. A ativação dependerá de credencial
-específica, teste de saída estruturada, custo e revisão do isolamento.
+O provider padrão continua sendo o fixture reproduzível até que uma credencial
+seja provisionada e `openai` seja selecionado no painel. A ativação exige teste
+de saída estruturada, custo e revisão do isolamento.
+
+## Provider OpenAI
+
+O painel controla o provider (`fixture` ou `openai`), o modelo GPT-5.6 e o
+nível de raciocínio para os próximos ciclos. A configuração é registrada em
+`lab_indicadores.ai_provider_settings` e lida pelo orquestrador ao criar cada
+job Hermes.
+
+Quando `openai` é selecionado, o engine usa a Responses API com Structured
+Outputs. O modelo recebe o contexto versionado, o perfil agregado e, em uma
+revisão, a hipótese pai e o erro registrado. O ativo, a trilha, o horizonte, o
+manifesto, os gates e o holdout continuam sendo invariantes do código; a saída
+do modelo não pode alterá-los.
+
+A chave não é armazenada no GitHub, no navegador ou no Supabase. Ela deve ser
+provisionada na VPS como `OPENAI_API_KEY` em
+`/etc/lab-indicadores/openai.env`, com permissão 600. O painel exibe e altera
+o modelo, mas nunca recebe o valor do segredo.
 
 ## Fronteiras
 

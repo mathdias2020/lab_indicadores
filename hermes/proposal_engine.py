@@ -1,10 +1,4 @@
-"""Generate an auditable Hermes proposal after a read-only data profile.
-
-The current provider is still a deterministic fixture, but campaign jobs now
-carry a hash-checked profile generated from the declared development Parquets.
-That profile is the input seam for a future model provider. It never includes
-holdout data and it never mutates an earlier proposal.
-"""
+"""Generate an auditable Hermes proposal after a read-only data profile."""
 
 from __future__ import annotations
 
@@ -14,6 +8,8 @@ import json
 import os
 import time
 from pathlib import Path
+
+from openai_provider import generate_openai_proposal
 
 
 AGENT_ID = "hermes-indicadores"
@@ -195,10 +191,47 @@ def process_job(job_path: Path, provider: str) -> Path:
         )
     elif job.get("research_mode") == "campaign":
         raise ValueError("campaign research requires a data profile")
-    if provider != "fixture":
-        raise RuntimeError("only the fixture provider is enabled in this isolated bootstrap")
+    effective_provider = str(job.get("provider") or provider)
+    model_metadata = {"provider": effective_provider, "model": None}
+    if effective_provider == "fixture":
+        proposal = build_fixture_proposal(job, context_path, context, profile_path, profile)
+    elif effective_provider == "openai":
+        if profile is None:
+            raise ValueError("OpenAI campaign proposals require a data profile")
+        parent_proposal = job.get("parent_proposal")
+        model_output, model_metadata = generate_openai_proposal(
+            job=job,
+            context=context,
+            profile=profile,
+            parent_proposal=parent_proposal if isinstance(parent_proposal, dict) else None,
+        )
+        proposal = build_fixture_proposal(job, context_path, context, profile_path, profile)
+        proposal.update(
+            {
+                "proposal_version": "hermes-proposal-v3-openai",
+                "title": model_output["title"].strip(),
+                "question": model_output["question"].strip(),
+                "mechanism": model_output["mechanism"].strip(),
+                "hypothesis": model_output["hypothesis"].strip(),
+                "model_output": model_output,
+            }
+        )
+        proposal["validation_plan"] = {
+            **proposal["validation_plan"],
+            "model_data_interpretation": model_output["data_interpretation"],
+            "model_features": model_output["features"],
+            "model_application_context": model_output["application_context"],
+            "model_attention_points": model_output["attention_points"],
+            "model_failure_criteria": model_output["failure_criteria"],
+            "model_next_test": model_output["next_test"],
+        }
+        proposal["limitations"] = [
+            *proposal["limitations"],
+            *[f"Hermes: {item}" for item in model_output["attention_points"]],
+        ]
+    else:
+        raise RuntimeError(f"unsupported Hermes provider: {effective_provider}")
 
-    proposal = build_fixture_proposal(job, context_path, context, profile_path, profile)
     proposal_hash = sha256_bytes(canonical_json(proposal))
     artifact = {
         "kind": "hermes_proposal_v2" if profile else "hermes_proposal_v1",
@@ -212,7 +245,7 @@ def process_job(job_path: Path, provider: str) -> Path:
         "data_profile_sha256": profile.get("profile_sha256") if profile else None,
         "proposal_sha256": proposal_hash,
         "holdout_accessed": False,
-        "generated_by": {"provider": provider, "model": None},
+        "generated_by": model_metadata,
         "proposal": proposal,
     }
     output_path = PROPOSAL_ROOT / f"{job['proposal_key']}.json"

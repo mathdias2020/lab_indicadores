@@ -42,6 +42,7 @@
           <a class="nav-item nav-item--active" href="#cockpit"><span class="nav-icon" aria-hidden="true">◌</span>Cockpit</a>
           <a class="nav-item" href="#runs"><span class="nav-icon" aria-hidden="true">≡</span>Runs</a>
           <a class="nav-item" href="#agents"><span class="nav-icon" aria-hidden="true">◇</span>Agentes</a>
+          <a class="nav-item" href="#settings"><span class="nav-icon" aria-hidden="true">⚙</span>Configuração</a>
           <a class="nav-item" href="#workers"><span class="nav-icon" aria-hidden="true">⌁</span>Workers</a>
           <a class="nav-item" href="#protocol"><span class="nav-icon" aria-hidden="true">↗</span>Protocolo</a>
         </nav>
@@ -179,6 +180,49 @@
             <p class="form-message" id="campaign-message" role="status"></p>
             <div class="campaigns-grid" id="campaigns-grid">
               <div class="campaign-empty">Nenhum ciclo iniciado ainda.</div>
+            </div>
+          </section>
+
+          <section class="settings-section" id="settings">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Configuração do Hermes</p>
+                <h2>Escolher o modelo</h2>
+              </div>
+              <span class="section-count" id="ai-settings-state">carregando</span>
+            </div>
+            <p class="section-lede">A seleção fica no control plane e passa a valer nos próximos ciclos. A chave da OpenAI permanece como segredo do serviço na VPS; ela não é enviada ao navegador, ao Supabase ou ao GitHub.</p>
+            <form id="ai-settings-form" class="settings-form">
+              <label for="ai-provider">Provedor
+                <select id="ai-provider" name="provider">
+                  <option value="fixture">Fixture reproduzível</option>
+                  <option value="openai">OpenAI Responses API</option>
+                </select>
+              </label>
+              <label for="ai-model">Modelo
+                <select id="ai-model" name="model">
+                  <option value="gpt-5.6-sol">GPT-5.6 Sol · qualidade</option>
+                  <option value="gpt-5.6-terra">GPT-5.6 Terra · equilíbrio</option>
+                  <option value="gpt-5.6-luna">GPT-5.6 Luna · volume</option>
+                </select>
+              </label>
+              <label for="ai-reasoning">Raciocínio
+                <select id="ai-reasoning" name="reasoning_effort">
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                  <option value="xhigh">xhigh</option>
+                  <option value="max">max</option>
+                </select>
+              </label>
+              <div class="settings-form__action">
+                <button class="button button--primary" type="submit">Salvar configuração <span aria-hidden="true">→</span></button>
+                <p class="form-message" id="ai-settings-message" role="status"></p>
+              </div>
+            </form>
+            <div class="secret-note">
+              <div><p class="eyebrow">Chave API</p><strong>Provisionamento externo</strong></div>
+              <p>Configure <code>OPENAI_API_KEY</code> em <code>/etc/lab-indicadores/openai.env</code> com permissão 600. O painel controla o provedor e o modelo, mas nunca recebe o valor secreto.</p>
             </div>
           </section>
 

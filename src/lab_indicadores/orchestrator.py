@@ -34,7 +34,7 @@ LOG_ROOT = LAB_ROOT / "logs" / "orchestrator"
 HERMES_AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 HERMES_HEARTBEAT_PATH = LAB_ROOT / "hermes" / "outbox" / "heartbeat.json"
 HERMES_STALE_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_STALE_SECONDS", "30"))
-HERMES_CAPABILITIES = ["read_development_data", "proposal_generation"]
+HERMES_CAPABILITIES = ["read_development_data", "proposal_generation", "openai_structured_proposal", "error_review"]
 HERMES_ALLOWED_STATUSES = {"observing", "proposing", "degraded", "error"}
 HERMES_ALLOWED_MODES = {"observation", "proposal", "research", "review"}
 HERMES_CONTEXT_MANIFEST = "hermes-context-absorption-v1"
@@ -74,6 +74,24 @@ def _database_url() -> str:
     if not value:
         raise RuntimeError("LAB_INDICADORES_DATABASE_URL is required")
     return value
+
+
+def _hermes_ai_settings(conn: psycopg.Connection) -> dict:
+    row = conn.execute(
+        """
+        select provider, model, reasoning_effort, enabled
+        from lab_indicadores.ai_provider_settings
+        where setting_key = 'hermes-proposal'
+        limit 1
+        """
+    ).fetchone()
+    if not row or not row["enabled"]:
+        return {"provider": "fixture", "model": None, "reasoning_effort": "medium"}
+    return {
+        "provider": str(row["provider"]),
+        "model": str(row["model"]),
+        "reasoning_effort": str(row["reasoning_effort"]),
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -629,6 +647,23 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
         if profile.get("profile_sha256") != payload.get("data_profile_sha256"):
             raise RuntimeError("research data profile logical hash mismatch")
 
+    parent_proposal = None
+    parent_proposal_key = payload.get("parent_proposal_key")
+    if parent_proposal_key:
+        parent_row = conn.execute(
+            """
+            select title, question, mechanism, hypothesis, validation_plan, limitations,
+                   proposal_sha256, revision_no
+            from lab_indicadores.proposals
+            where proposal_key=%s
+            """,
+            (parent_proposal_key,),
+        ).fetchone()
+        if parent_row:
+            parent_proposal = dict(parent_row)
+
+    ai_settings = _hermes_ai_settings(conn)
+
     proposal_key = f"hermes-{run_id}"
     HERMES_INBOX_PATH.mkdir(parents=True, exist_ok=True)
     job_path = HERMES_INBOX_PATH / f"{run_id}.json"
@@ -648,10 +683,14 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
         "data_profile_sha256": profile.get("profile_sha256") if profile else None,
         "data_profile_artifact_sha256": _sha256(profile_path) if profile_path else None,
         "parent_proposal_key": payload.get("parent_proposal_key"),
+        "parent_proposal": parent_proposal,
         "revision_no": payload.get("revision_no", 1),
         "change_kind": payload.get("change_kind", "initial"),
         "feedback_run_id": payload.get("feedback_run_id"),
         "feedback_error": payload.get("feedback_error"),
+        "provider": ai_settings["provider"],
+        "model": ai_settings["model"],
+        "reasoning_effort": ai_settings["reasoning_effort"],
     }
     temporary_path = job_path.with_suffix(".tmp")
     temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")

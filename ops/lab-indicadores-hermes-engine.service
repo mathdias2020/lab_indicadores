@@ -1,6 +1,7 @@
 [Unit]
 Description=Indicator laboratory Hermes proposal engine
-After=local-fs.target
+After=local-fs.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -10,6 +11,7 @@ WorkingDirectory=/srv/labs/projects/lab-b/hermes
 Environment=PYTHONUNBUFFERED=1
 Environment=HERMES_PROVIDER=fixture
 Environment=LAB_INDICADORES_HERMES_ROOT=/srv/labs/projects/lab-b/hermes
+EnvironmentFile=-/etc/lab-indicadores/openai.env
 ExecStartPre=/usr/bin/install -d -m 700 -o labadmin -g labadmin /srv/labs/projects/lab-b/hermes/inbox /srv/labs/projects/lab-b/hermes/outbox/proposals
 ExecStart=/usr/bin/python3 /srv/labs/projects/lab-b/hermes/proposal_engine.py --job-dir /srv/labs/projects/lab-b/hermes/inbox --provider fixture
 UMask=0077
@@ -23,8 +25,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-RestrictAddressFamilies=AF_UNIX
-IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 ReadOnlyPaths=/srv/labs/projects/lab-b/hermes/context /srv/labs/projects/lab-b/hermes/outbox/profiles /srv/labs/projects/lab-b/runs /srv/labs/datasets/canonical
 ReadWritePaths=/srv/labs/projects/lab-b/hermes/inbox /srv/labs/projects/lab-b/hermes/outbox
