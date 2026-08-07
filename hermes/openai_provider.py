@@ -272,7 +272,7 @@ def generate_openai_proposal(
         # Reasoning tokens count toward this Responses API limit. Keep the
         # user's selected xhigh effort while leaving room for the strict JSON
         # proposal payload to finish.
-        "max_output_tokens": 8000,
+        "max_output_tokens": 25000,
         "safety_identifier": _safety_identifier(str(job.get("agent_id", "hermes-indicadores"))),
         "metadata": {
             "agent_id": str(job.get("agent_id", "hermes-indicadores")),
@@ -367,7 +367,7 @@ def generate_openai_exploration_plan(
         "reasoning": {"effort": reasoning_effort, "context": "current_turn"},
         # xhigh reasoning can consume the budget before the short plan JSON;
         # keep the selected reasoning effort while allowing the plan to finish.
-        "max_output_tokens": 8000,
+        "max_output_tokens": 25000,
         "safety_identifier": _safety_identifier(str(job.get("agent_id", "hermes-indicadores"))),
         "metadata": {
             "agent_id": str(job.get("agent_id", "hermes-indicadores")),
