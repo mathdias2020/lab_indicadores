@@ -365,7 +365,9 @@ def generate_openai_exploration_plan(
         "instructions": instructions,
         "input": _canonical_json(user_payload),
         "reasoning": {"effort": reasoning_effort, "context": "current_turn"},
-        "max_output_tokens": 1800,
+        # xhigh reasoning can consume the budget before the short plan JSON;
+        # keep the selected reasoning effort while allowing the plan to finish.
+        "max_output_tokens": 8000,
         "safety_identifier": _safety_identifier(str(job.get("agent_id", "hermes-indicadores"))),
         "metadata": {
             "agent_id": str(job.get("agent_id", "hermes-indicadores")),
