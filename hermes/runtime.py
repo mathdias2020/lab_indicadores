@@ -17,7 +17,7 @@ from pathlib import Path
 
 AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 PROFILE_ID = "lab-indicadores"
-VERSION = "0.2.0-proposal-bootstrap"
+VERSION = "0.3.0-data-understanding"
 HEARTBEAT_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_HEARTBEAT_SECONDS", "5"))
 DATASET_ROOT = Path(
     os.environ.get(
@@ -46,6 +46,8 @@ def _dataset_observation() -> dict:
         "dataset_files": len(files),
         "dataset_modes": modes,
         "dataset_scope": "canonical/development-only",
+        "data_profile_stage": "available-before-proposal",
+        "proposal_feedback": "immutable-error-review-versions",
         "holdout_access": False,
     }
 
@@ -59,7 +61,7 @@ def _heartbeat_payload() -> dict:
         "mode": "observation",
         "profile_id": PROFILE_ID,
         "version": VERSION,
-        "capabilities": ["read_development_data", "proposal_generation"],
+        "capabilities": ["read_development_data", "data_profile", "proposal_generation", "error_review"],
         "metadata": {
             "project_id": "lab_indicadores",
             "execution_enabled": False,

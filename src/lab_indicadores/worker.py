@@ -37,6 +37,7 @@ ANALYSIS_SPECS = {
 }
 ANALYSIS_MANIFESTS = {item["dataset_manifest"] for item in ANALYSIS_SPECS.values()}
 ANALYSIS_ROOT = WORK_ROOT / "analysis"
+PROFILE_SPECS = ANALYSIS_SPECS
 
 
 def _load_manifest() -> dict:
@@ -66,23 +67,15 @@ def _rows_as_dicts(cursor) -> list[dict]:
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
 
-def _validate_analysis_job(job: dict) -> list[dict]:
-    if job.get("kind") != "indicator_analysis_job_v1":
-        raise ValueError("unsupported analysis job kind")
+def _validate_dataset_files(job: dict) -> list[dict]:
     if job.get("project_id") != "lab-indicadores":
-        raise ValueError("analysis job project_id does not belong to this laboratory")
+        raise ValueError("job project_id does not belong to this laboratory")
     if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", str(job.get("run_id", ""))):
-        raise ValueError("analysis run_id must be a UUID")
-    analysis_id = job.get("analysis_id")
-    spec = ANALYSIS_SPECS.get(analysis_id)
-    if not spec:
-        raise ValueError("analysis id is not allowed")
-    if job.get("dataset_manifest") != spec["dataset_manifest"]:
-        raise ValueError("analysis manifest does not match analysis id")
+        raise ValueError("job run_id must be a UUID")
     if job.get("holdout_accessed") is not False:
-        raise ValueError("analysis job must declare holdout_accessed=false")
+        raise ValueError("job must declare holdout_accessed=false")
     if job.get("asset") not in {"WDO", "WIN"}:
-        raise ValueError("analysis asset is not allowed")
+        raise ValueError("job asset is not allowed")
 
     root = CANONICAL_ROOT.resolve()
     checked: list[dict] = []
@@ -91,12 +84,12 @@ def _validate_analysis_job(job: dict) -> list[dict]:
             raise ValueError("analysis file asset does not match job asset")
         relative = Path(item["path"])
         if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"unsafe analysis dataset path: {relative}")
+            raise ValueError(f"unsafe dataset path: {relative}")
         if any(re.search(r"(?:^|[-_=])(2025|2026)(?:[-_.]|$)", part) for part in relative.parts):
             raise ValueError(f"holdout path is not allowed: {relative}")
         path = (CANONICAL_ROOT / relative).resolve()
         if not path.is_relative_to(root):
-            raise ValueError(f"analysis path escaped canonical root: {relative}")
+            raise ValueError(f"dataset path escaped canonical root: {relative}")
         if not path.is_file():
             raise FileNotFoundError(path)
         mode = stat.S_IMODE(path.stat().st_mode)
@@ -118,8 +111,153 @@ def _validate_analysis_job(job: dict) -> list[dict]:
             }
         )
     if not checked:
-        raise ValueError("analysis job contains no files")
+        raise ValueError("job contains no files")
     return checked
+
+
+def _validate_analysis_job(job: dict) -> list[dict]:
+    if job.get("kind") != "indicator_analysis_job_v1":
+        raise ValueError("unsupported analysis job kind")
+    analysis_id = job.get("analysis_id")
+    spec = ANALYSIS_SPECS.get(analysis_id)
+    if not spec:
+        raise ValueError("analysis id is not allowed")
+    if job.get("dataset_manifest") != spec["dataset_manifest"]:
+        raise ValueError("analysis manifest does not match analysis id")
+    return _validate_dataset_files(job)
+
+
+def _validate_profile_job(job: dict) -> list[dict]:
+    if job.get("kind") != "hermes_data_profile_job_v1":
+        raise ValueError("unsupported data profile job kind")
+    profile_context_id = job.get("profile_context_id")
+    spec = PROFILE_SPECS.get(profile_context_id)
+    if not spec:
+        raise ValueError("profile context id is not allowed")
+    if job.get("dataset_manifest") != spec["dataset_manifest"]:
+        raise ValueError("profile manifest does not match context")
+    profile_id = str(job.get("profile_id", ""))
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,120}", profile_id):
+        raise ValueError("profile_id is not safe")
+    return _validate_dataset_files(job)
+
+
+def _run_data_profile(job: dict, checked: list[dict]) -> dict:
+    """Read the declared development Parquets and emit bounded observations.
+
+    This is the data-understanding seam for Hermes. It returns schema and
+    aggregate observations, never raw trades, so the control plane can expose
+    what Hermes saw without copying the market dataset into Supabase.
+    """
+    try:
+        import duckdb
+    except ImportError as exc:  # pragma: no cover - image build owns this dependency.
+        raise RuntimeError("duckdb dependency is unavailable in the worker image") from exc
+
+    run_id = job["run_id"]
+    output_dir = RUNS_ROOT / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    source_paths = [str(CANONICAL_ROOT / item["path"]) for item in checked]
+    source_sql = "read_parquet([" + ",".join(_sql_quote(path) for path in source_paths) + "], union_by_name=true, filename=true)"
+    conn = duckdb.connect(database=":memory:")
+    conn.execute("PRAGMA threads=1")
+    conn.execute("PRAGMA memory_limit='1200MB'")
+    try:
+        schema_rows = conn.execute(f"describe select * from {source_sql}").fetchall()
+        columns = [{"name": row[0], "type": row[1], "nullable": row[2] != "NO"} for row in schema_rows]
+        column_names = {row[0].lower() for row in schema_rows}
+        summary = conn.execute(
+            f"""
+            select
+              count(*) as raw_rows,
+              min(try_cast(date as date)) as session_date_min,
+              max(try_cast(date as date)) as session_date_max,
+              min(try_cast(concat(cast(date as varchar), ' ', time) as timestamp)) as event_ts_min,
+              max(try_cast(concat(cast(date as varchar), ' ', time) as timestamp)) as event_ts_max,
+              min(try_cast(price as double)) as price_min,
+              max(try_cast(price as double)) as price_max,
+              min(try_cast(qty as double)) as qty_min,
+              max(try_cast(qty as double)) as qty_max,
+              count(*) filter (where try_cast(date as date) is null) as invalid_date_rows,
+              count(*) filter (where try_cast(price as double) is null) as null_price_rows,
+              count(*) filter (where try_cast(qty as double) is null) as null_qty_rows,
+              count(distinct nullif(cast(buy_agent as varchar), '')) as distinct_buy_agents,
+              count(distinct nullif(cast(sell_agent as varchar), '')) as distinct_sell_agents
+            from {source_sql}
+            """
+        ).fetchone()
+        trade_type_rows = conn.execute(
+            f"""
+            select coalesce(nullif(cast(trade_type as varchar), ''), '__EMPTY__') as trade_type,
+                   count(*) as rows
+            from {source_sql}
+            group by 1
+            order by rows desc, trade_type
+            limit 100
+            """
+        ).fetchall()
+        file_rows = []
+        for item, path in zip(checked, source_paths, strict=True):
+            row = conn.execute(
+                f"""
+                select count(*) as raw_rows,
+                       min(try_cast(date as date)) as session_date_min,
+                       max(try_cast(date as date)) as session_date_max
+                from read_parquet({_sql_quote(path)}, union_by_name=true)
+                """
+            ).fetchone()
+            file_rows.append({
+                **item,
+                "raw_rows": row[0],
+                "session_date_min": str(row[1]) if row[1] is not None else None,
+                "session_date_max": str(row[2]) if row[2] is not None else None,
+            })
+
+        summary_keys = [
+            "raw_rows", "session_date_min", "session_date_max", "event_ts_min", "event_ts_max",
+            "price_min", "price_max", "qty_min", "qty_max", "invalid_date_rows", "null_price_rows",
+            "null_qty_rows", "distinct_buy_agents", "distinct_sell_agents",
+        ]
+        summary_dict = {
+            key: (str(value) if value is not None and key.endswith(("_min", "_max")) else value)
+            for key, value in zip(summary_keys, summary, strict=True)
+        }
+        trade_types = [{"trade_type": row[0], "rows": row[1]} for row in trade_type_rows]
+        profile_without_hash = {
+            "kind": "hermes_data_profile_v1",
+            "project_id": "lab-indicadores",
+            "run_id": run_id,
+            "profile_id": job["profile_id"],
+            "profile_context_id": job["profile_context_id"],
+            "dataset_manifest": job["dataset_manifest"],
+            "asset": job["asset"],
+            "track": job.get("track", "flow_price"),
+            "horizon": job.get("horizon", "tactical_intraday"),
+            "source_files": file_rows,
+            "schema": columns,
+            "coverage": summary_dict,
+            "trade_type_counts": trade_types,
+            "data_understanding": {
+                "observed_columns": sorted(column_names),
+                "has_auction": any(row[0] == "Auction" for row in trade_type_rows),
+                "has_cross_trade": any(row[0] == "CrossTrade" for row in trade_type_rows),
+                "has_rlp_field": any("rlp" in name for name in column_names),
+                "has_direct_trade_field": any("direct" in name for name in column_names),
+                "aggression_fields_present": {name: name in column_names for name in ("trade_type", "buy_agent", "sell_agent")},
+                "raw_rows_are_aggregates": False,
+            },
+            "holdout_accessed": False,
+        }
+        payload = {
+            **profile_without_hash,
+            "profile_sha256": _stable_hash(profile_without_hash),
+            "status": "succeeded",
+        }
+        report_path = output_dir / "data-profile.json"
+        report_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        return {"report": str(report_path)}
+    finally:
+        conn.close()
 
 
 def _run_absorption_analysis(job: dict, checked: list[dict]) -> dict:
@@ -506,6 +644,17 @@ def analysis(job_path: str) -> None:
     print(json.dumps({"status": "succeeded", **result}, sort_keys=True))
 
 
+def profile(job_path: str) -> None:
+    path = Path(job_path).resolve()
+    inbox = (WORK_ROOT / "hermes-profile" / "inbox").resolve()
+    if not path.is_relative_to(inbox):
+        raise ValueError("profile job path is outside the laboratory inbox")
+    job = json.loads(path.read_text(encoding="utf-8"))
+    checked = _validate_profile_job(job)
+    result = _run_data_profile(job, checked)
+    print(json.dumps({"status": "succeeded", **result}, sort_keys=True))
+
+
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "healthcheck"
     try:
@@ -517,6 +666,10 @@ def main(argv: list[str]) -> int:
             if len(argv) != 3:
                 raise ValueError("analysis requires a job path")
             analysis(argv[2])
+        elif command == "profile":
+            if len(argv) != 3:
+                raise ValueError("profile requires a job path")
+            profile(argv[2])
         else:
             raise ValueError(f"unknown command: {command}")
     except Exception as exc:  # noqa: BLE001 - CLI must emit a clear failure.

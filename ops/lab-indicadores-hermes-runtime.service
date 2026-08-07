@@ -29,7 +29,7 @@ MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_UNIX
 IPAddressDeny=any
 CapabilityBoundingSet=
-ReadOnlyPaths=/srv/labs/datasets
+ReadOnlyPaths=/srv/labs/datasets/canonical
 ReadWritePaths=/srv/labs/projects/lab-b/hermes
 
 [Install]

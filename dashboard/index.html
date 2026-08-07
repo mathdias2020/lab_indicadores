@@ -37,6 +37,7 @@
         </div>
 
         <nav class="nav-list">
+          <a class="nav-item" href="#campaigns"><span class="nav-icon" aria-hidden="true">◉</span>Ciclos</a>
           <a class="nav-item" href="#proposals"><span class="nav-icon" aria-hidden="true">✦</span>Propostas</a>
           <a class="nav-item nav-item--active" href="#cockpit"><span class="nav-icon" aria-hidden="true">◌</span>Cockpit</a>
           <a class="nav-item" href="#runs"><span class="nav-icon" aria-hidden="true">≡</span>Runs</a>
@@ -162,6 +163,25 @@
             </div>
           </section>
 
+          <section class="campaigns-section" id="campaigns">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Hermes / ciclo controlado</p>
+                <h2>Dados antes da hipótese</h2>
+              </div>
+              <div class="section-heading__actions">
+                <span class="section-count" id="campaign-count">0 ciclos</span>
+                <button class="button button--quiet button--compact" data-campaign-asset="WDO" type="button">Iniciar WDO <span aria-hidden="true">→</span></button>
+                <button class="button button--quiet button--compact" data-campaign-asset="WIN" type="button">Iniciar WIN <span aria-hidden="true">→</span></button>
+              </div>
+            </div>
+            <p class="section-lede">O primeiro passo lê somente o recorte de desenvolvimento dos Parquets e grava um perfil hashado. Só depois o Hermes recebe esse contexto para propor ou revisar uma hipótese.</p>
+            <p class="form-message" id="campaign-message" role="status"></p>
+            <div class="campaigns-grid" id="campaigns-grid">
+              <div class="campaign-empty">Nenhum ciclo iniciado ainda.</div>
+            </div>
+          </section>
+
           <section class="proposals-section" id="proposals">
             <div class="section-heading">
               <div>
@@ -170,10 +190,6 @@
               </div>
               <div class="section-heading__actions">
                 <span class="section-count" id="proposal-count">0 propostas</span>
-                <div class="section-heading__actions">
-                  <button class="button button--quiet button--compact" data-research-asset="WDO" type="button">Gerar hipótese WDO <span aria-hidden="true">→</span></button>
-                  <button class="button button--quiet button--compact" data-research-asset="WIN" type="button">Gerar hipótese WIN <span aria-hidden="true">→</span></button>
-                </div>
               </div>
             </div>
             <p class="section-lede">Cada proposta nasce como hipótese não testada, com contexto, mecanismo, limites e hash. Nenhuma altera definição ou abre o holdout sozinha.</p>

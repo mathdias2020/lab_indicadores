@@ -3,13 +3,14 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const config = window.__LAB_CONFIG__ || {};
 const supabase = createClient(config.supabaseUrl, config.supabasePublishableKey);
 const $ = (selector) => document.querySelector(selector);
-const state = { session: null, runs: [], agents: [], proposals: [], selectedRun: null, timer: null };
+const state = { session: null, runs: [], agents: [], proposals: [], campaigns: [], selectedRun: null, timer: null };
 
 const authPanel = $("#auth-panel");
 const dashboard = $("#dashboard");
 const authMessage = $("#auth-message");
 const runMessage = $("#run-message");
 const researchMessage = $("#research-message");
+const campaignMessage = $("#campaign-message");
 
 function setMessage(element, message, kind = "") {
   element.textContent = message;
@@ -38,6 +39,12 @@ function makeAnalysisKey() {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
   const suffix = Math.random().toString(36).slice(2, 8);
   return `dashboard-analysis-${stamp}-${suffix}`;
+}
+
+function makeCampaignKey(asset = "WDO") {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `dashboard-campaign-${asset.toLowerCase()}-${stamp}-${suffix}`;
 }
 
 function setSessionView(session) {
@@ -76,23 +83,27 @@ async function loadDashboard() {
   const refreshState = $("#refresh-state");
   refreshState.classList.add("is-syncing");
   try {
-    const [runsResult, workersResult, agentsResult, proposalsResult] = await Promise.all([
+    const [runsResult, workersResult, agentsResult, proposalsResult, campaignsResult] = await Promise.all([
       supabase.rpc("dashboard_list_runs", { p_limit: 30 }),
       supabase.rpc("dashboard_list_workers"),
       supabase.rpc("dashboard_list_agents"),
       supabase.rpc("dashboard_list_proposals", { p_limit: 30 }),
+      supabase.rpc("dashboard_list_campaigns", { p_limit: 20 }),
     ]);
     if (runsResult.error) throw runsResult.error;
     if (workersResult.error) throw workersResult.error;
     if (agentsResult.error) throw agentsResult.error;
     if (proposalsResult.error) throw proposalsResult.error;
+    if (campaignsResult.error) throw campaignsResult.error;
     state.runs = runsResult.data || [];
     state.agents = agentsResult.data || [];
     state.proposals = proposalsResult.data || [];
+    state.campaigns = campaignsResult.data || [];
     renderRuns();
     renderWorkers(workersResult.data || []);
     renderAgents(state.agents);
     renderProposals(state.proposals);
+    renderCampaigns(state.campaigns);
     renderPulse();
     if (state.selectedRun) await loadRunDetail(state.selectedRun.run_id, false);
     refreshState.innerHTML = '<span class="status-dot status-dot--live"></span>Atualizado agora';
@@ -155,6 +166,51 @@ function renderAgents(agents) {
       '<span><small>heartbeat</small><b>' + (agent.last_heartbeat_at ? escapeHtml(formatDate(agent.last_heartbeat_at, true)) : "sem heartbeat") + '</b></span></div>' +
       '<div class="agent-guards">' + guards + "</div></article>";
   }).join("");
+}
+
+function campaignStatusLabel(status) {
+  return {
+    queued: "na fila",
+    running: "em andamento",
+    awaiting_review: "aguarda revisão",
+    failed: "falhou",
+    completed: "concluído",
+    cancelled: "cancelado",
+  }[status] || status || "desconhecido";
+}
+
+function campaignStageLabel(stage) {
+  return {
+    data_profile: "perfil dos dados",
+    hypothesis: "hipótese",
+    analysis: "análise",
+    error_review: "revisão de erro",
+    gate: "portão humano",
+    completed: "concluído",
+  }[stage] || stage || "—";
+}
+
+function renderCampaigns(campaigns) {
+  const grid = $("#campaigns-grid");
+  $("#campaign-count").textContent = `${campaigns.length} ciclo${campaigns.length === 1 ? "" : "s"}`;
+  if (!campaigns.length) {
+    grid.innerHTML = '<div class="campaign-empty">Nenhum ciclo iniciado ainda.</div>';
+    return;
+  }
+  grid.innerHTML = campaigns.map((campaign) => `
+    <article class="campaign-card">
+      <div class="campaign-card__top">
+        <div><p class="eyebrow">${escapeHtml(campaign.campaign_key)}</p><h3>${escapeHtml(campaign.asset)} · ${escapeHtml(campaign.track)}</h3></div>
+        <span class="${statusClass(campaign.status)}"><span class="status-dot"></span>${escapeHtml(campaignStatusLabel(campaign.status))}</span>
+      </div>
+      <p class="campaign-objective">${escapeHtml(campaign.objective)}</p>
+      <div class="campaign-facts">
+        <span><small>etapa</small><b>${escapeHtml(campaignStageLabel(campaign.stage))}</b></span>
+        <span><small>horizonte</small><b>${escapeHtml(proposalHorizonLabel(campaign.horizon))}</b></span>
+        <span><small>revisões</small><b>${escapeHtml(`${campaign.iteration}/${campaign.max_iterations}`)}</b></span>
+        <span><small>holdout</small><b>fechado</b></span>
+      </div>
+    </article>`).join("");
 }
 
 function proposalStatusLabel(status) {
@@ -343,29 +399,32 @@ $("#run-form").addEventListener("submit", async (event) => {
   await loadDashboard();
 });
 
-async function enqueueResearch(asset, button) {
+async function enqueueCampaign(asset, button) {
   button.disabled = true;
-  setMessage(researchMessage, `Gerando hipótese ${asset}…`);
-  const key = makeResearchKey(asset);
-  const { data, error } = await supabase.rpc("dashboard_enqueue_research", {
+  setMessage(campaignMessage, `Lendo dados de desenvolvimento ${asset}…`);
+  const key = makeCampaignKey(asset);
+  const { data, error } = await supabase.rpc("dashboard_enqueue_campaign", {
     p_idempotency_key: key,
-    p_run_key: key,
-    p_requested_by: "dashboard",
-    p_config: { context_id: asset === "WIN" ? "absorption-baseline-win-v1" : "absorption-baseline-v1" },
+    p_campaign_key: key,
+    p_asset: asset,
+    p_track: "flow_price",
+    p_horizon: "tactical_intraday",
+    p_objective: "Entender o recorte bruto de desenvolvimento antes de propor e testar um indicador explicável.",
+    p_config: { max_iterations: 3 },
   });
   if (error) {
-    setMessage(researchMessage, error.message, "error");
+    setMessage(campaignMessage, error.message, "error");
     button.disabled = false;
     return;
   }
-  setMessage(researchMessage, data?.[0]?.existing ? "Essa pesquisa já existe; a run original foi preservada." : "Pesquisa enfileirada para o Hermes.", "success");
-  setToast(data?.[0]?.existing ? "Idempotência preservada" : "Pesquisa enviada ao Hermes");
+  setMessage(campaignMessage, data?.[0]?.existing ? "Esse ciclo já existe; a execução original foi preservada." : "Ciclo enfileirado: perfil dos dados antes da hipótese.", "success");
+  setToast(data?.[0]?.existing ? "Idempotência preservada" : "Perfil enviado ao worker");
   await loadDashboard();
   button.disabled = false;
 }
 
-document.querySelectorAll("button[data-research-asset]").forEach((button) => {
-  button.addEventListener("click", () => enqueueResearch(button.dataset.researchAsset, button));
+document.querySelectorAll("button[data-campaign-asset]").forEach((button) => {
+  button.addEventListener("click", () => enqueueCampaign(button.dataset.campaignAsset, button));
 });
 
 window.addEventListener("keydown", (event) => { if (event.key.toLowerCase() === "r" && !event.metaKey && !event.ctrlKey && document.activeElement.tagName !== "INPUT") loadDashboard(); });

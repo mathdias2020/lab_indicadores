@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -60,6 +61,12 @@ ANALYSIS_CONTEXTS = {
 }
 ANALYSIS_MANIFESTS = {item["manifest"] for item in ANALYSIS_CONTEXTS.values()}
 ANALYSIS_INBOX_PATH = LAB_ROOT / "work" / "analysis" / "inbox"
+PROFILE_INBOX_PATH = LAB_ROOT / "work" / "hermes-profile" / "inbox"
+HERMES_PROFILE_ROOT = LAB_ROOT / "hermes" / "outbox" / "profiles"
+PROFILE_CONTEXTS = {
+    "WDO": "absorption-descriptive-multi-period-wdo-v1",
+    "WIN": "absorption-descriptive-multi-period-win-v1",
+}
 
 
 def _database_url() -> str:
@@ -114,8 +121,8 @@ def _register_worker(conn: psycopg.Connection, status: str, metadata: dict | Non
         (
             WORKER_ID,
             status,
-            json.dumps(["preflight", "analysis"], sort_keys=True),
-            "control-plane-v1",
+            json.dumps(["preflight", "data_profile", "analysis", "error_review"], sort_keys=True),
+            "control-plane-v2-hermes-data-understanding",
             json.dumps(metadata or {}, sort_keys=True),
         ),
     )
@@ -232,7 +239,7 @@ def _ingest_hermes_proposals(
         try:
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
             proposal = artifact["proposal"]
-            if artifact.get("kind") != "hermes_proposal_v1":
+            if artifact.get("kind") not in {"hermes_proposal_v1", "hermes_proposal_v2"}:
                 continue
             if artifact.get("agent_id") != HERMES_AGENT_ID:
                 continue
@@ -261,37 +268,17 @@ def _ingest_hermes_proposals(
                   proposal_key, run_id, agent_id, owner_id, status, evidence_level,
                   asset, track, horizon, title, question, mechanism, hypothesis,
                   validation_plan, limitations, source_context_uri,
-                  source_context_sha256, proposal_sha256, artifact_uri, holdout_accessed
+                  source_context_sha256, proposal_sha256, artifact_uri, holdout_accessed,
+                  campaign_id, parent_proposal_key, revision_no, change_kind, change_reason,
+                  feedback_run_id, data_profile_id, data_profile_sha256
                 ) values (
                   %s, %s, %s, %s, 'in_review', %s,
                   %s, %s, %s, %s, %s, %s, %s,
                   %s::jsonb, %s::jsonb, %s,
-                  %s, %s, %s, false
+                  %s, %s, %s, false,
+                  %s, %s, %s, %s, %s, %s, %s, %s
                 )
-                on conflict (proposal_key) do update set
-                  run_id = excluded.run_id,
-                  agent_id = excluded.agent_id,
-                  owner_id = excluded.owner_id,
-                  status = case
-                    when lab_indicadores.proposals.status in ('accepted', 'rejected', 'superseded')
-                      then lab_indicadores.proposals.status
-                    else excluded.status
-                  end,
-                  evidence_level = excluded.evidence_level,
-                  asset = excluded.asset,
-                  track = excluded.track,
-                  horizon = excluded.horizon,
-                  title = excluded.title,
-                  question = excluded.question,
-                  mechanism = excluded.mechanism,
-                  hypothesis = excluded.hypothesis,
-                  validation_plan = excluded.validation_plan,
-                  limitations = excluded.limitations,
-                  source_context_uri = excluded.source_context_uri,
-                  source_context_sha256 = excluded.source_context_sha256,
-                  proposal_sha256 = excluded.proposal_sha256,
-                  artifact_uri = excluded.artifact_uri,
-                  holdout_accessed = false
+                on conflict (proposal_key) do nothing
                 """,
                 (
                     artifact["proposal_key"],
@@ -312,8 +299,22 @@ def _ingest_hermes_proposals(
                     artifact["source_context_sha256"],
                     artifact["proposal_sha256"],
                     str(artifact_path),
+                    proposal.get("campaign_id"),
+                    proposal.get("parent_proposal_key"),
+                    int(proposal.get("revision_no", 1)),
+                    proposal.get("change_kind", "initial"),
+                    proposal.get("change_reason") or proposal.get("feedback_error"),
+                    proposal.get("feedback_run_id"),
+                    proposal.get("data_profile_id"),
+                    proposal.get("data_profile_sha256"),
                 ),
             )
+            persisted = conn.execute(
+                "select proposal_sha256 from lab_indicadores.proposals where proposal_key=%s",
+                (artifact["proposal_key"],),
+            ).fetchone()
+            if not persisted or persisted["proposal_sha256"] != artifact["proposal_sha256"]:
+                raise ValueError("proposal key already exists with different content")
             conn.commit()
             selected = {
                 "path": artifact_path,
@@ -343,6 +344,7 @@ def _start_run(conn: psycopg.Connection, run_id: str, run_type: str = "preflight
     message = {
         "research": "Hermes research proposal started",
         "analysis": "Deterministic indicator analysis started",
+        "data_profile": "Hermes development data profile started",
     }.get(run_type, "Preflight worker started")
     _event(conn, run_id, "run_started", message, {"worker_id": WORKER_ID, "run_type": run_type})
 
@@ -408,6 +410,184 @@ def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str
     )
     conn.commit()
     _event(conn, run_id, "run_failed", "Run failed", {"error": message})
+    _queue_error_review(conn, run_id, message)
+
+
+def _queue_error_review(conn: psycopg.Connection, failed_run_id: str, error: str) -> None:
+    """Create a new Hermes revision proposal after an analysis failure.
+
+    The failed proposal and run remain immutable evidence. The only automatic
+    action is to enqueue a bounded review proposal; acceptance and re-analysis
+    still require the human gate in the dashboard.
+    """
+    if "holdout" in error.lower():
+        return
+    run = conn.execute(
+        "select run_type, config, owner_id, campaign_id from lab_indicadores.runs where id=%s",
+        (failed_run_id,),
+    ).fetchone()
+    if not run or run["run_type"] != "analysis":
+        return
+    config = run["config"] or {}
+    proposal_key = str(config.get("proposal_key") or "")
+    campaign_id = run["campaign_id"] or config.get("campaign_id")
+    if not campaign_id and proposal_key:
+        proposal_row = conn.execute(
+            "select campaign_id from lab_indicadores.proposals where proposal_key=%s",
+            (proposal_key,),
+        ).fetchone()
+        campaign_id = proposal_row["campaign_id"] if proposal_row else None
+    if not campaign_id:
+        return
+    campaign = conn.execute(
+        "select campaign_key, asset, track, horizon, iteration, max_iterations from lab_indicadores.research_campaigns where id=%s",
+        (campaign_id,),
+    ).fetchone()
+    if not campaign:
+        return
+    next_iteration = int(campaign["iteration"]) + 1
+    if next_iteration > int(campaign["max_iterations"]):
+        conn.execute(
+            "update lab_indicadores.research_campaigns set status='failed', stage='error_review' where id=%s",
+            (campaign_id,),
+        )
+        conn.commit()
+        _event(conn, failed_run_id, "error_review_limit_reached", "Hermes review limit reached; human intervention required", {
+            "campaign_id": str(campaign_id), "max_iterations": campaign["max_iterations"], "holdout_accessed": False,
+        })
+        return
+    profile = conn.execute(
+        """
+        select id, artifact_uri, profile_sha256
+        from lab_indicadores.data_profiles
+        where campaign_id=%s
+        order by created_at desc
+        limit 1
+        """,
+        (campaign_id,),
+    ).fetchone()
+    if not profile:
+        return
+    context_id = "absorption-baseline-win-v1" if campaign["asset"] == "WIN" else "absorption-baseline-v1"
+    research_run_key = f"{campaign['campaign_key']}:error-review:{next_iteration}"
+    idempotency_key = f"{research_run_key}:start"
+    research_run = conn.execute(
+        """
+        insert into lab_indicadores.runs (
+          run_key, run_type, status, dataset_manifest, config, owner_id,
+          requested_by, campaign_id
+        ) values (
+          %s, 'research', 'queued', %s, %s::jsonb, %s, 'orchestrator', %s
+        ) on conflict (run_key) do update set run_key=excluded.run_key
+        returning id
+        """,
+        (
+            research_run_key,
+            HERMES_CONTEXT_MANIFEST,
+            json.dumps({
+                "campaign_id": str(campaign_id), "stage": "error_review", "context_id": context_id,
+                "asset": campaign["asset"], "track": campaign["track"], "horizon": campaign["horizon"],
+                "parent_proposal_key": proposal_key, "feedback_run_id": failed_run_id,
+                "feedback_error": error, "data_profile_id": str(profile["id"]),
+                "data_profile_path": profile["artifact_uri"], "data_profile_sha256": profile["profile_sha256"],
+                "research_mode": "campaign", "revision_no": next_iteration,
+                "change_kind": "error_review", "holdout_accessed": False,
+            }, sort_keys=True),
+            run["owner_id"], campaign_id,
+        ),
+    ).fetchone()["id"]
+    command_row = conn.execute(
+        """
+        insert into lab_indicadores.commands (
+          run_id, command_type, status, idempotency_key, payload, owner_id, requested_by
+        ) values (
+          %s, 'start_research', 'queued', %s, %s::jsonb, %s, 'orchestrator'
+        ) on conflict (idempotency_key) do update set idempotency_key=excluded.idempotency_key
+        returning id
+        """,
+        (
+            research_run, idempotency_key,
+            json.dumps({
+                "campaign_id": str(campaign_id), "context_id": context_id,
+                "asset": campaign["asset"], "track": campaign["track"], "horizon": campaign["horizon"],
+                "parent_proposal_key": proposal_key, "feedback_run_id": failed_run_id,
+                "feedback_error": error, "data_profile_id": str(profile["id"]),
+                "data_profile_path": profile["artifact_uri"], "data_profile_sha256": profile["profile_sha256"],
+                "research_mode": "campaign", "revision_no": next_iteration,
+                "change_kind": "error_review", "holdout_accessed": False,
+            }, sort_keys=True),
+            run["owner_id"],
+        ),
+    ).fetchone()["id"]
+    conn.execute(
+        """
+        insert into lab_indicadores.research_campaign_steps (
+          campaign_id, step_key, stage, sequence_no, status, run_id, input
+        ) values (%s, %s, 'error_review', %s, 'queued', %s, %s::jsonb)
+        on conflict (campaign_id, step_key) do nothing
+        """,
+        (
+            campaign_id, f"error-review-{next_iteration}", next_iteration + 1, research_run,
+            json.dumps({"parent_proposal_key": proposal_key, "feedback_run_id": failed_run_id, "holdout_accessed": False}, sort_keys=True),
+        ),
+    )
+    conn.execute(
+        "update lab_indicadores.research_campaigns set status='running', stage='error_review', iteration=%s where id=%s",
+        (next_iteration, campaign_id),
+    )
+    conn.commit()
+    _event(conn, failed_run_id, "error_review_queued", "Hermes queued an immutable revision proposal after analysis failure", {
+        "campaign_id": str(campaign_id), "command_id": str(command_row), "research_run_id": str(research_run),
+        "parent_proposal_key": proposal_key, "revision_no": next_iteration, "holdout_accessed": False,
+    })
+
+
+def _execute_data_profile(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
+    context_id = str(payload.get("profile_context_id") or "")
+    context_spec = ANALYSIS_CONTEXTS.get(context_id)
+    if not context_spec:
+        raise ValueError(f"unsupported Hermes profile context: {context_id}")
+    context_path = context_spec["path"]
+    if not context_path.is_file():
+        raise FileNotFoundError(context_path)
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    if context.get("holdout_accessed") is not False:
+        raise ValueError("profile context opened the holdout")
+    if context.get("dataset_manifest") != context_spec["manifest"]:
+        raise ValueError("profile context manifest mismatch")
+
+    PROFILE_INBOX_PATH.mkdir(parents=True, exist_ok=True)
+    job_path = PROFILE_INBOX_PATH / f"{run_id}.json"
+    job = {
+        "kind": "hermes_data_profile_job_v1",
+        "project_id": "lab-indicadores",
+        "run_id": run_id,
+        "profile_id": f"hermes-profile-{run_id}",
+        "profile_context_id": context_id,
+        "dataset_manifest": context_spec["manifest"],
+        "asset": context["asset"],
+        "track": context["track"],
+        "horizon": context["horizon"],
+        "files": context["files"],
+        "holdout_accessed": False,
+    }
+    temporary_path = job_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary_path, job_path)
+
+    log_path = LOG_ROOT / f"data-profile-{run_id}.log"
+    command = [
+        "sudo", "-n", "docker", "compose", "-p", PROJECT_NAME,
+        "run", "--rm", "indicator-worker", "profile",
+        f"/app/work/hermes-profile/inbox/{run_id}.json",
+    ]
+    return_code = _run_docker_job(conn, command, log_path, run_id)
+    if return_code != 0:
+        raise RuntimeError(f"data profile job exited with code {return_code}; log={log_path}")
+    report_path = LAB_ROOT / "runs" / run_id / "data-profile.json"
+    if not report_path.is_file():
+        raise FileNotFoundError(report_path)
+    return {"report": report_path, "log": log_path, "context": context}
 
 
 def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
@@ -424,6 +604,18 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
     ).fetchone():
         raise RuntimeError(f"research run not found: {run_id}")
 
+    profile_path = None
+    profile = None
+    if payload.get("data_profile_path"):
+        profile_path = Path(str(payload["data_profile_path"])).resolve()
+        if not profile_path.is_file() or not profile_path.is_relative_to(HERMES_PROFILE_ROOT.resolve()):
+            raise RuntimeError("research data profile path is outside Hermes profile boundary")
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        if profile.get("holdout_accessed") is not False:
+            raise RuntimeError("research data profile opened the holdout")
+        if profile.get("profile_sha256") != payload.get("data_profile_sha256"):
+            raise RuntimeError("research data profile logical hash mismatch")
+
     proposal_key = f"hermes-{run_id}"
     HERMES_INBOX_PATH.mkdir(parents=True, exist_ok=True)
     job_path = HERMES_INBOX_PATH / f"{run_id}.json"
@@ -435,7 +627,18 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
         "dataset_manifest": HERMES_CONTEXT_MANIFEST,
         "context_id": context_id,
         "context_path": str(context_path),
-        "execution_profile": "fixture_proposal",
+        "execution_profile": "data_informed_fixture" if profile else "fixture_proposal",
+        "research_mode": payload.get("research_mode", "campaign" if profile else "legacy"),
+        "campaign_id": payload.get("campaign_id"),
+        "data_profile_path": str(profile_path) if profile_path else None,
+        "data_profile_id": payload.get("data_profile_id"),
+        "data_profile_sha256": profile.get("profile_sha256") if profile else None,
+        "data_profile_artifact_sha256": _sha256(profile_path) if profile_path else None,
+        "parent_proposal_key": payload.get("parent_proposal_key"),
+        "revision_no": payload.get("revision_no", 1),
+        "change_kind": payload.get("change_kind", "initial"),
+        "feedback_run_id": payload.get("feedback_run_id"),
+        "feedback_error": payload.get("feedback_error"),
     }
     temporary_path = job_path.with_suffix(".tmp")
     temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
@@ -459,6 +662,200 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
     if not proposal:
         raise RuntimeError("Hermes engine completed without a proposal artifact")
     return {"proposal": proposal}
+
+
+def _succeed_data_profile(conn: psycopg.Connection, run_id: str, command_id: str, result: dict) -> None:
+    report = Path(result["report"]).resolve()
+    expected_root = (LAB_ROOT / "runs" / run_id).resolve()
+    if not report.is_file() or not report.is_relative_to(expected_root):
+        raise RuntimeError("unexpected Hermes data profile path")
+    profile = json.loads(report.read_text(encoding="utf-8"))
+    if (
+        profile.get("kind") != "hermes_data_profile_v1"
+        or profile.get("status") != "succeeded"
+        or profile.get("run_id") != run_id
+        or profile.get("holdout_accessed") is not False
+    ):
+        raise RuntimeError("data profile failed the success/holdout contract")
+    profile_sha256 = profile.get("profile_sha256")
+    without_hash = {key: value for key, value in profile.items() if key not in {"profile_sha256", "status"}}
+    if profile_sha256 != hashlib.sha256(_canonical_json(without_hash)).hexdigest():
+        raise RuntimeError("data profile logical hash mismatch")
+
+    run = conn.execute(
+        "select campaign_id, owner_id from lab_indicadores.runs where id=%s",
+        (run_id,),
+    ).fetchone()
+    if not run or not run["campaign_id"]:
+        raise RuntimeError("data profile run is not linked to a campaign")
+    campaign = conn.execute(
+        "select campaign_key, asset, track, horizon, iteration, max_iterations from lab_indicadores.research_campaigns where id=%s",
+        (run["campaign_id"],),
+    ).fetchone()
+    if not campaign:
+        raise RuntimeError("data profile campaign does not exist")
+
+    profile_key = f"{profile['profile_id']}-{run_id}"
+    HERMES_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+    profile_copy = HERMES_PROFILE_ROOT / f"{profile_key}.json"
+    shutil.copyfile(report, profile_copy)
+    report_sha256 = _sha256(report)
+    conn.execute(
+        """
+        insert into lab_indicadores.artifacts
+          (run_id, artifact_type, uri, sha256, metadata)
+        values (%s, 'hermes_data_profile', %s, %s, %s::jsonb)
+        """,
+        (
+            run_id,
+            str(profile_copy),
+            report_sha256,
+            json.dumps({
+                "profile_id": profile["profile_id"],
+                "profile_sha256": profile_sha256,
+                "asset": profile["asset"],
+                "raw_rows": profile.get("coverage", {}).get("raw_rows"),
+                "source_files": len(profile.get("source_files", [])),
+                "holdout_accessed": False,
+            }, sort_keys=True),
+        ),
+    )
+    data_profile = conn.execute(
+        """
+        insert into lab_indicadores.data_profiles (
+          profile_key, campaign_id, run_id, step_id, profile_version,
+          profile_context_id, asset, dataset_manifest, profile,
+          profile_sha256, artifact_uri, holdout_accessed
+        ) values (
+          %s, %s, %s,
+          (select id from lab_indicadores.research_campaign_steps where campaign_id=%s and step_key='data-profile-1'),
+          'hermes-data-profile-v1', %s, %s, %s, %s::jsonb, %s, %s, false
+        ) returning id
+        """,
+        (
+            profile_key,
+            run["campaign_id"],
+            run_id,
+            run["campaign_id"],
+            profile["profile_context_id"],
+            profile["asset"],
+            profile["dataset_manifest"],
+            json.dumps(profile, sort_keys=True),
+            profile_sha256,
+            str(profile_copy),
+        ),
+    ).fetchone()
+    data_profile_id = data_profile["id"]
+    next_iteration = int(campaign["iteration"]) + 1
+    research_context_id = "absorption-baseline-win-v1" if campaign["asset"] == "WIN" else "absorption-baseline-v1"
+    research_run_key = f"{campaign['campaign_key']}:hypothesis:{next_iteration}"
+    research_idempotency_key = f"{research_run_key}:start"
+    research_run = conn.execute(
+        """
+        insert into lab_indicadores.runs (
+          run_key, run_type, status, dataset_manifest, config, owner_id,
+          requested_by, campaign_id
+        ) values (
+          %s, 'research', 'queued', %s, %s::jsonb, %s, 'orchestrator', %s
+        ) returning id
+        """,
+        (
+            research_run_key,
+            HERMES_CONTEXT_MANIFEST,
+            json.dumps({
+                "campaign_id": str(run["campaign_id"]),
+                "stage": "hypothesis",
+                "context_id": research_context_id,
+                "asset": campaign["asset"],
+                "track": campaign["track"],
+                "horizon": campaign["horizon"],
+                "data_profile_id": str(data_profile_id),
+                "data_profile_path": str(profile_copy),
+                "data_profile_sha256": profile_sha256,
+                "data_profile_artifact_sha256": report_sha256,
+                "research_mode": "campaign",
+                "revision_no": next_iteration,
+                "change_kind": "initial",
+                "holdout_accessed": False,
+            }, sort_keys=True),
+            run["owner_id"],
+            run["campaign_id"],
+        ),
+    ).fetchone()["id"]
+    research_command = conn.execute(
+        """
+        insert into lab_indicadores.commands (
+          run_id, command_type, status, idempotency_key, payload,
+          owner_id, requested_by
+        ) values (
+          %s, 'start_research', 'queued', %s, %s::jsonb, %s, 'orchestrator'
+        ) returning id
+        """,
+        (
+            research_run,
+            research_idempotency_key,
+            json.dumps({
+                "campaign_id": str(run["campaign_id"]),
+                "context_id": research_context_id,
+                "asset": campaign["asset"],
+                "track": campaign["track"],
+                "horizon": campaign["horizon"],
+                "data_profile_id": str(data_profile_id),
+                "data_profile_path": str(profile_copy),
+                "data_profile_sha256": profile_sha256,
+                "data_profile_artifact_sha256": report_sha256,
+                "research_mode": "campaign",
+                "revision_no": next_iteration,
+                "change_kind": "initial",
+                "holdout_accessed": False,
+            }, sort_keys=True),
+            run["owner_id"],
+        ),
+    ).fetchone()["id"]
+    conn.execute(
+        """
+        insert into lab_indicadores.research_campaign_steps (
+          campaign_id, step_key, stage, sequence_no, status, run_id, input
+        ) values (
+          %s, %s, 'hypothesis', %s, 'queued', %s,
+          %s::jsonb
+        )
+        """,
+        (
+            run["campaign_id"],
+            f"hypothesis-{next_iteration}",
+            next_iteration + 1,
+            research_run,
+            json.dumps({"data_profile_id": str(data_profile_id), "holdout_accessed": False}, sort_keys=True),
+        ),
+    )
+    conn.execute(
+        "update lab_indicadores.research_campaign_steps set status='succeeded', output=%s::jsonb, finished_at=clock_timestamp() where campaign_id=%s and step_key='data-profile-1'",
+        (json.dumps({"data_profile_id": str(data_profile_id), "profile_sha256": profile_sha256}, sort_keys=True), run["campaign_id"]),
+    )
+    conn.execute(
+        "update lab_indicadores.research_campaigns set status='running', stage='hypothesis', iteration=%s where id=%s",
+        (next_iteration, run["campaign_id"]),
+    )
+    conn.execute(
+        "update lab_indicadores.runs set status='succeeded', heartbeat_at=clock_timestamp(), finished_at=clock_timestamp() where id=%s",
+        (run_id,),
+    )
+    conn.execute(
+        "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
+        (command_id,),
+    )
+    conn.commit()
+    _event(conn, run_id, "run_succeeded", "Hermes data profile completed before hypothesis generation", {
+        "artifact_type": "hermes_data_profile", "profile_sha256": profile_sha256,
+        "artifact_sha256": report_sha256, "raw_rows": profile.get("coverage", {}).get("raw_rows"),
+        "holdout_accessed": False,
+    })
+    _event(conn, research_run, "hypothesis_queued", "Hermes hypothesis queued with data profile context", {
+        "campaign_id": str(run["campaign_id"]), "command_id": str(research_command),
+        "data_profile_id": str(data_profile_id), "profile_sha256": profile_sha256,
+        "holdout_accessed": False,
+    })
 
 
 def _run_docker_job(
@@ -515,6 +912,10 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
     artifact_path = Path(proposal["path"]).resolve()
     if not artifact_path.is_file() or not artifact_path.is_relative_to(HERMES_PROPOSAL_ROOT.resolve()):
         raise RuntimeError("unexpected Hermes proposal artifact path")
+    proposal_row = conn.execute(
+        "select campaign_id, revision_no from lab_indicadores.proposals where proposal_key=%s",
+        (proposal["proposal_key"],),
+    ).fetchone()
 
     conn.execute(
         """
@@ -544,6 +945,19 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
         "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
         (command_id,),
     )
+    if proposal_row and proposal_row["campaign_id"]:
+        conn.execute(
+            "update lab_indicadores.research_campaign_steps set status='awaiting_review', output=%s::jsonb, finished_at=clock_timestamp() where campaign_id=%s and step_key=%s",
+            (
+                json.dumps({"proposal_key": proposal["proposal_key"], "proposal_sha256": proposal["proposal_sha256"], "holdout_accessed": False}, sort_keys=True),
+                proposal_row["campaign_id"],
+                f"hypothesis-{proposal_row['revision_no']}",
+            ),
+        )
+        conn.execute(
+            "update lab_indicadores.research_campaigns set status='awaiting_review', stage='gate' where id=%s",
+            (proposal_row["campaign_id"],),
+        )
     conn.commit()
     _event(
         conn,
@@ -698,6 +1112,24 @@ def _succeed_analysis(conn: psycopg.Connection, run_id: str, command_id: str, re
         "update lab_indicadores.commands set status='completed', completed_at=clock_timestamp() where id=%s",
         (command_id,),
     )
+    campaign_row = conn.execute(
+        """
+        select coalesce(r.campaign_id, p.campaign_id) as campaign_id
+        from lab_indicadores.runs r
+        left join lab_indicadores.proposals p on p.proposal_key=%s
+        where r.id=%s
+        """,
+        (payload.get("proposal_key"), run_id),
+    ).fetchone()
+    if campaign_row and campaign_row["campaign_id"]:
+        conn.execute(
+            "update lab_indicadores.research_campaigns set status='awaiting_review', stage='gate' where id=%s",
+            (campaign_row["campaign_id"],),
+        )
+        conn.execute(
+            "update lab_indicadores.research_campaign_steps set status='awaiting_review', output=%s::jsonb, finished_at=clock_timestamp() where campaign_id=%s and run_id=%s",
+            (json.dumps({"analysis_artifact_sha256": artifact_hash, "holdout_accessed": False}, sort_keys=True), campaign_row["campaign_id"], run_id),
+        )
     conn.commit()
     _event(
         conn,
@@ -756,13 +1188,20 @@ def process_one(conn: psycopg.Connection) -> bool:
     if command_type == "start_research" and manifest != HERMES_CONTEXT_MANIFEST:
         _fail_run(conn, run_id, command_id, f"research manifest not allowed: {manifest}")
         return True
+    if command_type == "start_data_profile" and manifest not in ANALYSIS_MANIFESTS:
+        _fail_run(conn, run_id, command_id, f"data profile manifest not allowed: {manifest}")
+        return True
     if command_type == "start_analysis" and manifest not in ANALYSIS_MANIFESTS:
         _fail_run(conn, run_id, command_id, f"analysis manifest not allowed: {manifest}")
         return True
 
     _register_worker(conn, "busy", {"run_id": run_id})
     try:
-        if command_type == "start_research":
+        if command_type == "start_data_profile":
+            _start_run(conn, run_id, "data_profile")
+            result = _execute_data_profile(conn, run_id, command["payload"] or {})
+            _succeed_data_profile(conn, run_id, command_id, result)
+        elif command_type == "start_research":
             _start_run(conn, run_id, "research")
             result = _execute_research(conn, run_id, command["payload"] or {})
             _succeed_research(conn, run_id, command_id, result)

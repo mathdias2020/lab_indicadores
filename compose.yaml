@@ -32,10 +32,6 @@ services:
         target: /data/manifests
         read_only: true
       - type: bind
-        source: /srv/labs/datasets/holdout
-        target: /data/holdout
-        read_only: true
-      - type: bind
         source: /srv/labs/projects/lab-b/runs
         target: /app/runs
       - type: bind
