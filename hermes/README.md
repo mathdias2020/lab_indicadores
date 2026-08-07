@@ -11,6 +11,10 @@ The first activation stage is observation only:
 - is registered by this laboratory's existing control-plane orchestrator;
 - never writes to `/srv/labs/projects/lab_automatizado` or its schema.
 
-The hypothesis engine is intentionally not enabled by this bootstrap. It will
-be added as a separate proposal stage with its own model credential, context
-contract, proposal artifacts, review gate, and dashboard evidence trail.
+The proposal stage is separate from the observation runtime. When OpenAI is
+selected, Hermes may request up to three semantic exploration questions from a
+fixed catalog. The worker executes those questions with DuckDB against the
+development Parquets in read-only mode; the model never submits SQL, file
+paths, or arbitrary columns and receives bounded aggregates rather than raw
+trades. Exploration reports are hashable artifacts under this laboratory's
+outbox and remain subject to the human review gate.

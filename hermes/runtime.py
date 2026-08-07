@@ -17,7 +17,7 @@ from pathlib import Path
 
 AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 PROFILE_ID = "lab-indicadores"
-VERSION = "0.4.0-openai-provider"
+VERSION = "0.5.0-bounded-explorer"
 HEARTBEAT_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_HEARTBEAT_SECONDS", "5"))
 DATASET_ROOT = Path(
     os.environ.get(
@@ -61,7 +61,14 @@ def _heartbeat_payload() -> dict:
         "mode": "observation",
         "profile_id": PROFILE_ID,
         "version": VERSION,
-        "capabilities": ["read_development_data", "data_profile", "proposal_generation", "openai_structured_proposal", "error_review"],
+        "capabilities": [
+            "read_development_data",
+            "data_profile",
+            "bounded_duckdb_exploration",
+            "proposal_generation",
+            "openai_structured_proposal",
+            "error_review",
+        ],
         "metadata": {
             "project_id": "lab_indicadores",
             "execution_enabled": False,

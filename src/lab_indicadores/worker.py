@@ -655,6 +655,18 @@ def profile(job_path: str) -> None:
     print(json.dumps({"status": "succeeded", **result}, sort_keys=True))
 
 
+def explore(job_path: str) -> None:
+    path = Path(job_path).resolve()
+    inbox = (WORK_ROOT / "hermes-explorer" / "inbox").resolve()
+    if not path.is_relative_to(inbox):
+        raise ValueError("exploration job path is outside the laboratory inbox")
+    job = json.loads(path.read_text(encoding="utf-8"))
+    from hermes_explorer import run_exploration
+
+    result = run_exploration(job)
+    print(json.dumps({"status": "succeeded", **result}, sort_keys=True))
+
+
 def main(argv: list[str]) -> int:
     command = argv[1] if len(argv) > 1 else "healthcheck"
     try:
@@ -670,6 +682,10 @@ def main(argv: list[str]) -> int:
             if len(argv) != 3:
                 raise ValueError("profile requires a job path")
             profile(argv[2])
+        elif command == "explore":
+            if len(argv) != 3:
+                raise ValueError("explore requires a job path")
+            explore(argv[2])
         else:
             raise ValueError(f"unknown command: {command}")
     except Exception as exc:  # noqa: BLE001 - CLI must emit a clear failure.
