@@ -164,11 +164,27 @@ def _extract_structured_output(response: dict[str, Any], schema: dict[str, Any])
 
     output_text = response.get("output_text")
     if not isinstance(output_text, str) or not output_text.strip():
+        text_parts: list[str] = []
+        refusal: str | None = None
         for item in response.get("output", []):
-            for content in item.get("content", []) if isinstance(item, dict) else []:
-                if content.get("type") == "refusal":
-                    raise RuntimeError(f"OpenAI refused structured proposal: {content.get('refusal', '')}")
-        raise RuntimeError("OpenAI response did not contain output_text")
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content", []):
+                if not isinstance(content, dict):
+                    continue
+                content_type = content.get("type")
+                if content_type == "output_text" and isinstance(content.get("text"), str):
+                    text_parts.append(content["text"])
+                elif content_type == "refusal":
+                    refusal = str(content.get("refusal") or "unknown refusal")
+        output_text = "".join(text_parts).strip()
+        if not output_text:
+            if refusal:
+                raise RuntimeError(f"OpenAI refused structured output: {refusal}")
+            error = response.get("error")
+            if isinstance(error, dict):
+                raise RuntimeError(f"OpenAI response error: {error.get('message') or error.get('code') or 'unknown'}")
+            raise RuntimeError("OpenAI response did not contain structured output text")
 
     try:
         value = json.loads(output_text)
