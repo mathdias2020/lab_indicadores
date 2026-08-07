@@ -431,6 +431,10 @@ def _succeed_run(conn: psycopg.Connection, run_id: str, command_id: str, result:
 
 def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str) -> None:
     message = error[:4000]
+    run_context = conn.execute(
+        "select run_type, campaign_id from lab_indicadores.runs where id=%s",
+        (run_id,),
+    ).fetchone()
     conn.execute(
         "update lab_indicadores.runs set status='failed', error_message=%s, finished_at=clock_timestamp() where id=%s",
         (message, run_id),
@@ -439,6 +443,19 @@ def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str
         "update lab_indicadores.commands set status='failed', error_message=%s, completed_at=clock_timestamp() where id=%s",
         (message, command_id),
     )
+    if run_context and run_context["run_type"] == "research" and run_context["campaign_id"]:
+        conn.execute(
+            """
+            update lab_indicadores.research_campaign_steps
+            set status='failed', error_payload=%s::jsonb, finished_at=clock_timestamp()
+            where run_id=%s
+            """,
+            (json.dumps({"error": message, "holdout_accessed": False}, sort_keys=True), run_id),
+        )
+        conn.execute(
+            "update lab_indicadores.research_campaigns set status='failed', stage='error_review' where id=%s",
+            (run_context["campaign_id"],),
+        )
     conn.commit()
     _event(conn, run_id, "run_failed", "Run failed", {"error": message})
     try:
