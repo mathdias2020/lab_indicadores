@@ -34,7 +34,13 @@ LOG_ROOT = LAB_ROOT / "logs" / "orchestrator"
 HERMES_AGENT_ID = os.environ.get("LAB_INDICADORES_HERMES_AGENT_ID", "hermes-indicadores")
 HERMES_HEARTBEAT_PATH = LAB_ROOT / "hermes" / "outbox" / "heartbeat.json"
 HERMES_STALE_SECONDS = int(os.environ.get("LAB_INDICADORES_HERMES_STALE_SECONDS", "30"))
-HERMES_CAPABILITIES = ["read_development_data", "proposal_generation", "openai_structured_proposal", "error_review"]
+HERMES_CAPABILITIES = [
+    "read_development_data",
+    "bounded_duckdb_exploration",
+    "proposal_generation",
+    "openai_structured_proposal",
+    "error_review",
+]
 HERMES_ALLOWED_STATUSES = {"observing", "proposing", "degraded", "error"}
 HERMES_ALLOWED_MODES = {"observation", "proposal", "research", "review"}
 HERMES_CONTEXT_MANIFEST = "hermes-context-absorption-v1"
@@ -44,6 +50,8 @@ HERMES_CONTEXTS = {
 }
 HERMES_INBOX_PATH = LAB_ROOT / "hermes" / "inbox"
 HERMES_PROPOSAL_ROOT = LAB_ROOT / "hermes" / "outbox" / "proposals"
+HERMES_EXPLORATION_PLAN_ROOT = LAB_ROOT / "hermes" / "outbox" / "exploration-plans"
+HERMES_EXPLORATION_ROOT = LAB_ROOT / "hermes" / "outbox" / "explorations"
 HERMES_ENGINE_SERVICE = "lab-indicadores-hermes-engine.service"
 ANALYSIS_CONTEXTS = {
     "absorption-descriptive-baseline-v1": {
@@ -62,6 +70,7 @@ ANALYSIS_CONTEXTS = {
 ANALYSIS_MANIFESTS = {item["manifest"] for item in ANALYSIS_CONTEXTS.values()}
 ANALYSIS_INBOX_PATH = LAB_ROOT / "work" / "analysis" / "inbox"
 PROFILE_INBOX_PATH = LAB_ROOT / "work" / "hermes-profile" / "inbox"
+EXPLORATION_INBOX_PATH = LAB_ROOT / "work" / "hermes-explorer" / "inbox"
 HERMES_PROFILE_ROOT = LAB_ROOT / "hermes" / "outbox" / "profiles"
 PROFILE_CONTEXTS = {
     "WDO": "absorption-descriptive-multi-period-wdo-v1",
@@ -339,6 +348,10 @@ def _ingest_hermes_proposals(
                 "proposal_key": artifact["proposal_key"],
                 "proposal_sha256": artifact["proposal_sha256"],
                 "artifact_sha256": artifact_sha256,
+                "exploration_result_uri": artifact.get("exploration_result_uri"),
+                "exploration_sha256": artifact.get("exploration_sha256"),
+                "exploration_artifact_sha256": artifact.get("exploration_artifact_sha256"),
+                "exploration_query_count": artifact.get("proposal", {}).get("exploration_query_count", 0),
             }
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             conn.rollback()
@@ -621,6 +634,96 @@ def _execute_data_profile(conn: psycopg.Connection, run_id: str, payload: dict) 
     return {"report": report_path, "log": log_path, "context": context}
 
 
+def _load_hermes_exploration_plan(run_id: str, profile_sha256: str) -> tuple[Path, dict]:
+    plan_path = (HERMES_EXPLORATION_PLAN_ROOT / f"{run_id}.json").resolve()
+    if not plan_path.is_file() or not plan_path.is_relative_to(HERMES_EXPLORATION_PLAN_ROOT.resolve()):
+        raise FileNotFoundError(f"Hermes exploration plan not found for run {run_id}")
+    plan_artifact = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan_artifact.get("kind") != "hermes_exploration_plan_v1":
+        raise ValueError("unsupported Hermes exploration plan kind")
+    if plan_artifact.get("run_id") != run_id:
+        raise ValueError("Hermes exploration plan run mismatch")
+    if plan_artifact.get("source_profile_sha256") != profile_sha256:
+        raise ValueError("Hermes exploration plan profile mismatch")
+    if plan_artifact.get("holdout_accessed") is not False:
+        raise ValueError("Hermes exploration plan opened the holdout")
+    without_hash = {
+        key: value
+        for key, value in plan_artifact.items()
+        if key not in {"plan_sha256", "status"}
+    }
+    if plan_artifact.get("plan_sha256") != hashlib.sha256(_canonical_json(without_hash)).hexdigest():
+        raise ValueError("Hermes exploration plan hash mismatch")
+    queries = (plan_artifact.get("plan") or {}).get("queries")
+    if not isinstance(queries, list) or not 1 <= len(queries) <= 3:
+        raise ValueError("Hermes exploration plan query count is invalid")
+    return plan_path, plan_artifact
+
+
+def _execute_hermes_exploration(
+    conn: psycopg.Connection,
+    run_id: str,
+    profile: dict,
+    plan_path: Path,
+    plan_artifact: dict,
+) -> dict:
+    EXPLORATION_INBOX_PATH.mkdir(parents=True, exist_ok=True)
+    HERMES_EXPLORATION_ROOT.mkdir(parents=True, exist_ok=True)
+    job_path = EXPLORATION_INBOX_PATH / f"{run_id}.json"
+    job = {
+        "kind": "hermes_exploration_job_v1",
+        "project_id": PROJECT_NAME.replace("_", "-"),
+        "run_id": run_id,
+        "exploration_id": f"hermes-exploration-{run_id}",
+        "asset": profile["asset"],
+        "track": profile.get("track", "flow_price"),
+        "horizon": profile.get("horizon", "tactical_intraday"),
+        "dataset_manifest": profile["dataset_manifest"],
+        "source_profile_sha256": profile["profile_sha256"],
+        "plan_sha256": plan_artifact["plan_sha256"],
+        "files": profile["source_files"],
+        "queries": (plan_artifact["plan"] or {}).get("queries", []),
+        "holdout_accessed": False,
+    }
+    temporary_path = job_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary_path, job_path)
+
+    log_path = LOG_ROOT / f"hermes-exploration-{run_id}.log"
+    command = [
+        "sudo", "-n", "docker", "compose", "-p", PROJECT_NAME,
+        "run", "--rm", "indicator-worker", "explore",
+        f"/app/work/hermes-explorer/inbox/{run_id}.json",
+    ]
+    return_code = _run_docker_job(conn, command, log_path, run_id)
+    if return_code != 0:
+        raise RuntimeError(f"Hermes exploration exited with code {return_code}; log={log_path}")
+
+    report_path = (LAB_ROOT / "runs" / run_id / "hermes-exploration.json").resolve()
+    if not report_path.is_file() or not report_path.is_relative_to((LAB_ROOT / "runs" / run_id).resolve()):
+        raise FileNotFoundError("Hermes exploration report was not produced")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if (
+        report.get("kind") != "hermes_exploration_report_v1"
+        or report.get("status") != "succeeded"
+        or report.get("run_id") != run_id
+        or report.get("source_profile_sha256") != profile["profile_sha256"]
+        or report.get("plan_sha256") != plan_artifact["plan_sha256"]
+        or report.get("holdout_accessed") is not False
+    ):
+        raise RuntimeError("Hermes exploration report failed its source/holdout contract")
+
+    result_path = HERMES_EXPLORATION_ROOT / f"{run_id}.json"
+    shutil.copyfile(report_path, result_path)
+    return {
+        "path": result_path,
+        "exploration_sha256": report["exploration_sha256"],
+        "artifact_sha256": _sha256(result_path),
+        "plan_sha256": plan_artifact["plan_sha256"],
+        "query_count": len(report.get("queries", [])),
+    }
+
+
 def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> dict:
     context_id = str(payload.get("context_id") or "absorption-baseline-v1")
     context_path = HERMES_CONTEXTS.get(context_id)
@@ -696,23 +799,59 @@ def _execute_research(conn: psycopg.Connection, run_id: str, payload: dict) -> d
     temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary_path, job_path)
 
-    completed = subprocess.run(
-        ["sudo", "-n", "systemctl", "start", HERMES_ENGINE_SERVICE],
-        cwd=LAB_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Hermes engine exited with code {completed.returncode}: {completed.stdout[-2000:]}"
+    def start_hermes_engine() -> None:
+        completed = subprocess.run(
+            ["sudo", "-n", "systemctl", "start", HERMES_ENGINE_SERVICE],
+            cwd=LAB_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=120,
         )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"Hermes engine exited with code {completed.returncode}: {completed.stdout[-2000:]}"
+            )
+
+    start_hermes_engine()
+
+    exploration_execution = None
+    if ai_settings["provider"] == "openai" and profile is not None and not job.get("exploration_results_path"):
+        plan_path = HERMES_EXPLORATION_PLAN_ROOT / f"{run_id}.json"
+        if plan_path.is_file():
+            loaded_plan_path, plan_artifact = _load_hermes_exploration_plan(
+                run_id,
+                str(profile["profile_sha256"]),
+            )
+            exploration_execution = _execute_hermes_exploration(
+                conn,
+                run_id,
+                profile,
+                loaded_plan_path,
+                plan_artifact,
+            )
+            job.update(
+                {
+                    "exploration_results_path": str(exploration_execution["path"]),
+                    "exploration_sha256": exploration_execution["exploration_sha256"],
+                    "exploration_artifact_sha256": exploration_execution["artifact_sha256"],
+                    "exploration_plan_sha256": exploration_execution["plan_sha256"],
+                }
+            )
+            temporary_path = job_path.with_suffix(".tmp")
+            temporary_path.write_text(json.dumps(job, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary_path, job_path)
+            start_hermes_engine()
 
     proposal = _ingest_hermes_proposals(conn, expected_proposal_key=proposal_key)
     if not proposal:
         raise RuntimeError("Hermes engine completed without a proposal artifact")
+    if exploration_execution:
+        proposal["exploration_result_uri"] = str(exploration_execution["path"])
+        proposal["exploration_sha256"] = exploration_execution["exploration_sha256"]
+        proposal["exploration_artifact_sha256"] = exploration_execution["artifact_sha256"]
+        proposal["exploration_query_count"] = exploration_execution["query_count"]
     return {"proposal": proposal}
 
 
@@ -989,6 +1128,37 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
             ),
         ),
     )
+    exploration_uri = proposal.get("exploration_result_uri")
+    if exploration_uri:
+        exploration_path = Path(str(exploration_uri)).resolve()
+        if (
+            not exploration_path.is_file()
+            or not exploration_path.is_relative_to(HERMES_EXPLORATION_ROOT.resolve())
+        ):
+            raise RuntimeError("unexpected Hermes exploration artifact path")
+        expected_exploration_artifact_sha256 = proposal.get("exploration_artifact_sha256")
+        if expected_exploration_artifact_sha256 and _sha256(exploration_path) != expected_exploration_artifact_sha256:
+            raise RuntimeError("Hermes exploration artifact hash mismatch")
+        conn.execute(
+            """
+            insert into lab_indicadores.artifacts
+              (run_id, artifact_type, uri, sha256, metadata)
+            values (%s, 'hermes_exploration', %s, %s, %s::jsonb)
+            """,
+            (
+                run_id,
+                str(exploration_path),
+                expected_exploration_artifact_sha256 or _sha256(exploration_path),
+                json.dumps(
+                    {
+                        "exploration_sha256": proposal.get("exploration_sha256"),
+                        "query_count": proposal.get("exploration_query_count", 0),
+                        "holdout_accessed": False,
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        )
     conn.execute(
         "update lab_indicadores.runs set status='succeeded', heartbeat_at=clock_timestamp(), finished_at=clock_timestamp() where id=%s",
         (run_id,),
@@ -1020,6 +1190,7 @@ def _succeed_research(conn: psycopg.Connection, run_id: str, command_id: str, re
             "artifact_type": "hermes_proposal",
             "proposal_key": proposal["proposal_key"],
             "sha256": proposal["artifact_sha256"],
+            "exploration_queries": proposal.get("exploration_query_count", 0),
         },
     )
 

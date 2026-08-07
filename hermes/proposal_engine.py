@@ -9,7 +9,7 @@ import os
 import time
 from pathlib import Path
 
-from openai_provider import generate_openai_proposal
+from openai_provider import generate_openai_exploration_plan, generate_openai_proposal
 
 
 AGENT_ID = "hermes-indicadores"
@@ -23,6 +23,8 @@ ALLOWED_PROFILE_MANIFESTS = {
     "hermes-analysis-absorption-multi-period-win-v1",
 }
 PROFILE_ROOT = HERMES_ROOT / "outbox" / "profiles"
+EXPLORATION_PLAN_ROOT = HERMES_ROOT / "outbox" / "exploration-plans"
+EXPLORATION_RESULT_ROOT = HERMES_ROOT / "outbox" / "explorations"
 
 
 def canonical_json(value: object) -> bytes:
@@ -98,6 +100,35 @@ def load_profile(path_value: str, expected_sha256: str, expected_artifact_sha256
     if profile.get("dataset_manifest") not in ALLOWED_PROFILE_MANIFESTS:
         raise ValueError("data profile manifest is not allowlisted")
     return path, profile
+
+
+def load_exploration_result(path_value: str, expected_profile_sha256: str) -> tuple[Path, dict]:
+    path = Path(path_value).resolve()
+    if not path.is_relative_to(EXPLORATION_RESULT_ROOT.resolve()):
+        raise ValueError("exploration result is outside the Hermes exploration boundary")
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if result.get("kind") != "hermes_exploration_report_v1":
+        raise ValueError("unsupported exploration result kind")
+    if result.get("holdout_accessed") is not False:
+        raise ValueError("exploration result holdout contract failed")
+    if result.get("source_profile_sha256") != expected_profile_sha256:
+        raise ValueError("exploration result source profile mismatch")
+    query_contract = result.get("query_contract") or {}
+    queries = result.get("queries")
+    if query_contract.get("raw_rows_returned") is not False or query_contract.get("sql_submitted_by_model") is not False:
+        raise ValueError("exploration result query contract failed")
+    if not isinstance(queries, list) or not 1 <= len(queries) <= 3:
+        raise ValueError("exploration result query count is invalid")
+    without_hash = {
+        key: value
+        for key, value in result.items()
+        if key not in {"exploration_sha256", "status"}
+    }
+    if result.get("exploration_sha256") != sha256_bytes(canonical_json(without_hash)):
+        raise ValueError("exploration result logical hash mismatch")
+    return path, result
 
 
 def build_fixture_proposal(job: dict, context_path: Path, context: dict, profile_path: Path | None, profile: dict | None) -> dict:
@@ -178,7 +209,7 @@ def build_fixture_proposal(job: dict, context_path: Path, context: dict, profile
     return proposal
 
 
-def process_job(job_path: Path, provider: str) -> Path:
+def process_job(job_path: Path, provider: str) -> Path | None:
     job = load_job(job_path)
     context_path, context = load_context(job["context_path"])
     profile_path = None
@@ -193,6 +224,48 @@ def process_job(job_path: Path, provider: str) -> Path:
         raise ValueError("campaign research requires a data profile")
     effective_provider = str(job.get("provider") or provider)
     model_metadata = {"provider": effective_provider, "model": None}
+    exploration_path = None
+    exploration = None
+    if effective_provider == "openai" and profile is not None:
+        if job.get("exploration_results_path"):
+            exploration_path, exploration = load_exploration_result(
+                str(job["exploration_results_path"]),
+                str(profile.get("profile_sha256") or ""),
+            )
+        else:
+            plan_path = EXPLORATION_PLAN_ROOT / f"{job['run_id']}.json"
+            if not plan_path.is_file():
+                plan, plan_metadata = generate_openai_exploration_plan(
+                    job=job,
+                    context=context,
+                    profile=profile,
+                )
+                if plan.get("should_explore") and plan.get("queries"):
+                    plan_without_hash = {
+                        "kind": "hermes_exploration_plan_v1",
+                        "agent_id": AGENT_ID,
+                        "run_id": job["run_id"],
+                        "proposal_key": job["proposal_key"],
+                        "source_profile_sha256": profile.get("profile_sha256"),
+                        "plan": plan,
+                        "generated_by": plan_metadata,
+                        "holdout_accessed": False,
+                    }
+                    plan_artifact = {
+                        **plan_without_hash,
+                        "plan_sha256": sha256_bytes(canonical_json(plan_without_hash)),
+                        "status": "succeeded",
+                    }
+                    write_json_atomic(plan_path, plan_artifact)
+                    return None
+            elif plan_path.is_file():
+                plan_artifact = json.loads(plan_path.read_text(encoding="utf-8"))
+                if plan_artifact.get("holdout_accessed") is not False:
+                    raise ValueError("exploration plan holdout contract failed")
+                if plan_artifact.get("source_profile_sha256") != profile.get("profile_sha256"):
+                    raise ValueError("exploration plan source profile mismatch")
+                return None
+            exploration = {"plan": {"should_explore": False, "queries": []}, "results": []}
     if effective_provider == "fixture":
         proposal = build_fixture_proposal(job, context_path, context, profile_path, profile)
     elif effective_provider == "openai":
@@ -204,6 +277,7 @@ def process_job(job_path: Path, provider: str) -> Path:
             context=context,
             profile=profile,
             parent_proposal=parent_proposal if isinstance(parent_proposal, dict) else None,
+            exploration=exploration,
         )
         proposal = build_fixture_proposal(job, context_path, context, profile_path, profile)
         proposal.update(
@@ -214,6 +288,9 @@ def process_job(job_path: Path, provider: str) -> Path:
                 "mechanism": model_output["mechanism"].strip(),
                 "hypothesis": model_output["hypothesis"].strip(),
                 "model_output": model_output,
+                "exploration_artifact_uri": str(exploration_path) if exploration_path else None,
+                "exploration_sha256": exploration.get("exploration_sha256") if exploration else None,
+                "exploration_query_count": len(exploration.get("queries", [])) if exploration else 0,
             }
         )
         proposal["validation_plan"] = {
@@ -224,6 +301,15 @@ def process_job(job_path: Path, provider: str) -> Path:
             "model_attention_points": model_output["attention_points"],
             "model_failure_criteria": model_output["failure_criteria"],
             "model_next_test": model_output["next_test"],
+            "bounded_exploration": {
+                "exploration_sha256": proposal.get("exploration_sha256"),
+                "query_count": proposal.get("exploration_query_count", 0),
+                "query_kinds": [
+                    item.get("spec", {}).get("kind")
+                    for item in (exploration or {}).get("queries", [])
+                    if isinstance(item, dict) and isinstance(item.get("spec"), dict)
+                ],
+            },
         }
         proposal["limitations"] = [
             *proposal["limitations"],
@@ -246,6 +332,9 @@ def process_job(job_path: Path, provider: str) -> Path:
         "proposal_sha256": proposal_hash,
         "holdout_accessed": False,
         "generated_by": model_metadata,
+        "exploration_result_uri": str(exploration_path) if exploration_path else None,
+        "exploration_sha256": exploration.get("exploration_sha256") if exploration else None,
+        "exploration_artifact_sha256": sha256_file(exploration_path) if exploration_path else None,
         "proposal": proposal,
     }
     output_path = PROPOSAL_ROOT / f"{job['proposal_key']}.json"
@@ -263,8 +352,9 @@ def main() -> int:
     if not jobs:
         return 0
     for job_path in jobs:
-        process_job(job_path, args.provider)
-        job_path.unlink()
+        output_path = process_job(job_path, args.provider)
+        if output_path is not None:
+            job_path.unlink()
     return 0
 
 
