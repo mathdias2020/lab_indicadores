@@ -410,7 +410,20 @@ def _fail_run(conn: psycopg.Connection, run_id: str, command_id: str, error: str
     )
     conn.commit()
     _event(conn, run_id, "run_failed", "Run failed", {"error": message})
-    _queue_error_review(conn, run_id, message)
+    try:
+        _queue_error_review(conn, run_id, message)
+    except Exception as review_error:
+        # Preserve the original failure as the primary evidence. A review
+        # scheduling failure is operational metadata, not a replacement for
+        # the research failure and must not terminate the orchestrator loop.
+        conn.rollback()
+        _event(
+            conn,
+            run_id,
+            "error_review_failed",
+            "Automatic error review could not be queued",
+            {"error": str(review_error)[:4000], "holdout_accessed": False},
+        )
 
 
 def _queue_error_review(conn: psycopg.Connection, failed_run_id: str, error: str) -> None:

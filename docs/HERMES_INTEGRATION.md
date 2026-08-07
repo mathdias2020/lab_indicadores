@@ -1,5 +1,18 @@
 # Hermes no laboratório de indicadores
 
+## Ciclo com entendimento dos dados
+
+O painel pode iniciar uma campanha WDO ou WIN. A campanha executa, nesta ordem:
+
+1. `data_profile`: o worker DuckDB lê somente os arquivos de desenvolvimento declarados no contexto e grava schema, cobertura, tipos de negócio, datas, faixa de preço/quantidade, agentes distintos e campos disponíveis;
+2. `hypothesis`: o Hermes recebe o perfil hashado antes da proposta. O perfil contém observações agregadas, não copia trades crus para o Supabase;
+3. `gate`: a proposta fica `in_review`. Aceitação e execução da análise continuam humanas;
+4. `analysis`: o worker executa o cálculo determinístico e registra relatório, hash, cobertura, limites e holdout fechado.
+
+Uma falha de análise não altera a proposta anterior. O orquestrador pode criar uma etapa `error_review` limitada por `max_iterations`, vinculada à run falha, ao erro, à proposta pai e ao mesmo perfil de dados. O Hermes grava uma nova proposta com `revision_no` e `change_kind=error_review`; nenhuma revisão é promovida ou executada automaticamente.
+
+O worker e os serviços do laboratório não montam `/srv/labs/datasets/holdout`. Todos os perfis e propostas continuam dentro de `/srv/labs/projects/lab-b`.
+
 ## Estado desta integração
 
 O laboratório possui o agente lógico `hermes-indicadores`, registrado no
